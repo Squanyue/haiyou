@@ -1,0 +1,81 @@
+server:
+  port: 28080
+  servlet:
+    context-path: /
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+
+spring:
+  application:
+    name: exhibition-api
+  servlet:
+    multipart:
+      enabled: true
+      # 飞书多维表单个附件上限约 2GB
+      max-file-size: 2048MB
+      max-request-size: 2100MB
+  http:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
+  redis:
+    # Redis 7.2
+    host: 127.0.0.1
+    port: 6379
+#    password: 123456
+    database: 0
+    timeout: 5000ms
+    lettuce:
+      pool:
+        max-active: 16
+        max-idle: 8
+        min-idle: 2
+        max-wait: 3000ms
+
+feishu:
+  base-url: https://open.feishu.cn
+  # 在飞书开发者后台 -> 凭证与基础信息 中获取
+#  app-id: ${FEISHU_APP_ID:}
+#  app-secret: ${FEISHU_APP_SECRET:}
+  #测试
+  app-id: cli_aadadd619df89cda
+  app-secret: Zuf5eKB765xG9KoKtQKISgxpasi2xMPo
+  # 多维表格默认参数（可被接口请求体覆盖）
+  app-token: MJFJbxxDAaWiCxspk2YcvSu2nFc
+  table-id: tbloFrfGT96PjmZi
+  # 单个附件上传上限（字节），默认约 2GB-1
+  media-max-size-bytes: 2147483647
+  # 前端未上传视频时，写入「视频测试」字段的默认 MP4
+  default-video-file: "C:/Users/18310/Downloads/video-NwzRbNKx8ocgIGxj7eRcu5YAnbM (1).mp4"
+  # 新增记录时默认写入「人员」字段的用户 ID（open_id），例如姜博文；不配则仅当前端传入时写入
+  default-person-user-id: ou_a92f9fc269402e7fecb2655726e9a6c9
+  default-person-user-id-type: open_id
+  # 「人员.直属上级」默认写入王倩
+  default-supervisor-user-id: ou_a1e8b37926cb4bb21d3e70151a6e33dc
+  # 「人员.工号」前端未传时的默认值
+  default-person-employee-no: TEST-001
+
+ead:
+  token-url: https://wzgyl.uatead.cnooc/api/we-open/v1/wethirdpartysystemlogin/getToken
+  app-id: 8HJhzIaD
+  app-secret: de0d50ea1e0d4374a7d24ff0a118f2838491c5c7
+  process-start-url: http://wzgyl.uatead.cnooc/xcoa/api/framework/v1/extra-process-drive/process-instance/start
+  # 发起流程时 JSON 表单字段名
+  process-start-json-field: createFlowInstance
+  # EAD 回调附件本地保存目录
+  callback-file-dir: D:/haiyou/shuzhi/code/file
+
+logging:
+  level:
+    root: INFO
+    com.haiyou.shuzhi.exhibition: DEBUG
+  charset:
+    console: UTF-8
+    file: UTF-8
