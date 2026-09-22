@@ -2,6 +2,7 @@ package com.haiyou.shuzhi.exhibition;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * 数智展厅后端接口微服务启动类
@@ -10,6 +11,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * @date 2026-07-23
  */
 @SpringBootApplication
+@EnableScheduling
 public class ExhibitionApplication {
 
     public static void main(String[] args) {

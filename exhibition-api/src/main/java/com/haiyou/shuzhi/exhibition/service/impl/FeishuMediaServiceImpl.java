@@ -45,9 +45,6 @@ public class FeishuMediaServiceImpl implements FeishuMediaService {
     private static final String UPLOAD_PART_PATH = "/open-apis/drive/v1/medias/upload_part";
     private static final String UPLOAD_FINISH_PATH = "/open-apis/drive/v1/medias/upload_finish";
     private static final long UPLOAD_ALL_MAX_SIZE = 20L * 1024 * 1024;
-    private static final long DEFAULT_ABSOLUTE_MAX_SIZE = 2147483647L; // 2GB-1，避免 int 溢出
-
-
     private final RestTemplate restTemplate;
     private final FeishuProperties feishuProperties;
     private final FeishuAuthService feishuAuthService;
@@ -90,10 +87,10 @@ public class FeishuMediaServiceImpl implements FeishuMediaService {
 
     private long resolveAbsoluteMaxSize() {
         Long configured = feishuProperties.getMediaMaxSizeBytes();
-        if (configured != null && configured > 0) {
-            return configured;
+        if (configured == null || configured < 1) {
+            throw new IllegalStateException("未配置有效的 feishu.media-max-size-bytes");
         }
-        return DEFAULT_ABSOLUTE_MAX_SIZE;
+        return configured;
     }
 
     private String uploadAll(String accessToken, String appToken, String parentType,

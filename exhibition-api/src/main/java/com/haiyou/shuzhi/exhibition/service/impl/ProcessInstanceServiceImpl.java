@@ -1,9 +1,13 @@
 package com.haiyou.shuzhi.exhibition.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.haiyou.shuzhi.exhibition.common.EadConstants;
+import com.haiyou.shuzhi.exhibition.common.FeishuConstants;
+import com.haiyou.shuzhi.exhibition.config.EadProperties;
 import com.haiyou.shuzhi.exhibition.config.FeishuProperties;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordCreateRequest;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordCreateVO;
+import com.haiyou.shuzhi.exhibition.dto.FeishuRecordDeleteRequest;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordSearchRequest;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordSearchVO;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordUpdateRequest;
@@ -28,14 +32,12 @@ import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 流程发起业务服务实现
@@ -48,118 +50,212 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class ProcessInstanceServiceImpl implements ProcessInstanceService {
 
-    private static final String DEFAULT_USER_ACCOUNT = "linmm";
-    private static final String DEFAULT_SYS_AND_FLOW_CODE = "test_ztcs";
-    private static final String DEFAULT_ONBOARDING_APP_TOKEN = "WlrRbzs3ia2EUBsI2qscO7Ajn1g";
-    private static final String DEFAULT_ONBOARDING_TABLE_ID = "tbl1Tvwl7t5RxcMs";
-    private static final String APPLICATION_TYPE_TABLE_ID = "tbl3pZdlgPrWPwFQ";
-    private static final String DEPARTMENT_DICTIONARY_TABLE_ID = "tbl5FYux2dx60VTo";
-    private static final String BUSINESS_DOMAIN_DICTIONARY_TABLE_ID = "tbl1vUUXPPbDYRFK";
-    private static final String SCENE_DICTIONARY_TABLE_ID = "tbl6vhBm9ICRfj90";
-    private static final String STATUS_DICTIONARY_TABLE_ID = "tblwKZRKEWIpnGuX";
-    private static final String RPA_DETAIL_TABLE_ID = "tbl5Ks8cFcZeaWNN";
-    private static final String ATTACHMENT_TABLE_ID = "tbl4ImRqwcoGGpIX";
-    private static final int MAX_ATTACHMENT_COUNT = 5;
-    private static final long MAX_ATTACHMENT_SIZE = 512L * 1024L * 1024L;
-    private static final long MAX_IMAGE_SIZE = 10L * 1024L * 1024L;
-    /**
-     * 飞书表格中标题对应字段名（按当前业务表调整）
-     */
-    private static final String FEISHU_TITLE_FIELD = "文本测试";
-    private static final String FEISHU_IMAGE_FIELD = "图片测试";
-    private static final String FEISHU_VIDEO_FIELD = "视频测试";
-    private static final String FEISHU_PERSON_FIELD = "人员";
-    private static final String FEISHU_SUPERVISOR_FIELD = "人员.直属上级";
-    private static final String FEISHU_EMPLOYEE_NO_FIELD = "人员.工号";
-    private static final String DEFAULT_DETAIL_RECORD_ID = "rechcNRGQB";
-    private static final String DEFAULT_TEST_URL = "https://www.feishu.cn";
-    private static final String DEFAULT_PERSON_USER_ID_TYPE = "open_id";
-    /**
-     * 当前目标应用索引表实际可写入的字段。目标表中的部分字段仍处于待定/未建状态，
-     * 因此不能把前端表单字段原样透传给飞书，否则会触发 FieldNameNotFound。
-     */
-    private static final Set<String> ONBOARDING_WRITABLE_FIELDS = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
-            "应用名称", "应用类型", "子类型（待定）", "摘要", "应用简介", "开发合作方信息",
-            "应用URL地址", "移动端地址", "状态", "所属部门ID", "接入人AD账号", "联系电话",
-            "联系邮箱", "适用用户AD账号", "适用部门ID", "适用角色", "权限范围", "申请人AD账号",
-            "运营人员ID", "所属业务域ID", "所属场景ID", "适用对象"
-    )));
-    private static final Set<String> RPA_DETAIL_WRITABLE_FIELDS = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
-            "应用编码", "版本号", "备注说明", "RPA所属平台", "操作流程步骤", "应用描述"
-    )));
-    private static final Set<String> GENERATED_FIELDS = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
-            "应用ID", "主键", "应用图标", "应用Logo", "应用封面"
-    )));
+    /** EAD 下拉字段使用中文选项值；飞书内部字段仍保留业务编码。 */
+    private static final Map<String, String> EAD_APPLICATION_TYPE_LABELS = optionMap(
+            "T007", "可视化",
+            "T006", "报表",
+            "T003", "RPA",
+            "T008", "数据集",
+            "T009", "指标",
+            "T001", "AI",
+            "T005", "海能work应用",
+            "T002", "EAD",
+            "T004", "其他工具");
+    private static final Map<String, String> EAD_DEPARTMENT_LABELS = optionMap(
+            "D001", "信息化管理部",
+            "D002", "数据智能部",
+            "D003", "供应链管理部",
+            "D004", "物资采购中心",
+            "D005", "经营管理部");
+    private static final Map<String, String> EAD_BUSINESS_DOMAIN_LABELS = optionMap(
+            "BD001", "智能办公",
+            "BD002", "综合管理",
+            "BD003", "供应链管理",
+            "BD004", "经营分析",
+            "BD005", "数字化办公");
 
+    /**
+     * 单实例编号锁：保护“读取最大编号 + 写入应用索引/上架申请”这段临界区。
+     * 多实例部署时必须替换为 Redis、数据库序列或其他分布式协调方案。
+     */
+    private static final ReentrantLock ID_GENERATION_LOCK = new ReentrantLock();
+    /** 单实例内已分配但可能尚未写入多维表的申请单号。 */
+    private final Map<String, String> reservedOnboardingApplicationNos = new HashMap<String, String>();
     private final EadProcessService eadProcessService;
     private final FeishuBitableService feishuBitableService;
     private final FeishuMediaService feishuMediaService;
     private final FeishuProperties feishuProperties;
+    private final EadProperties eadProperties;
     private final ObjectMapper objectMapper;
 
     @Override
     public Object start(ProcessInstanceStartRequest request, MultipartFile[] files) {
-        /* 暂停新增请求校验，保留代码，后续需要时可恢复。
-        if (StringUtils.hasText(request.getRecordId())) {
-            throw new IllegalArgumentException("新增提交不允许传入 recordId");
+        return start(request, files, buildLegacyEadFilesByField(files));
+    }
+
+    @Override
+    public String reserveOnboardingApplicationNo(String uniqueIdentifier) {
+        if (!StringUtils.hasText(uniqueIdentifier)) {
+            throw new IllegalArgumentException("uniqueIdentifier 不能为空，无法预占申请单号");
         }
-        validateAttachments(files);
-        validateDetailFields(request.getDetailFields());
-        */
+        String normalizedIdentifier = uniqueIdentifier.trim();
+        acquireIdGenerationLock();
+        try {
+            String reserved = reservedOnboardingApplicationNos.get(normalizedIdentifier);
+            if (StringUtils.hasText(reserved)) {
+                return reserved;
+            }
+            String applicationNo = nextOnboardingApplicationNo();
+            reservedOnboardingApplicationNos.put(normalizedIdentifier, applicationNo);
+            return applicationNo;
+        } finally {
+            releaseIdGenerationLock();
+        }
+    }
+
+    @Override
+    public Object start(ProcessInstanceStartRequest request,
+                        MultipartFile[] files,
+                        Map<String, MultipartFile[]> eadFilesByField) {
         applyDefaults(request);
+        boolean hainengWork = isHainengWorkApplication(request);
 
-        // 1. 先调用飞书新增记录（含图片测试附件、人员），拿到 recordId
-        String recordId = createFeishuRecord(request, files);
-        request.setRecordId(recordId);
+        String onboardingRecordId;
+        acquireIdGenerationLock();
+        try {
+            try {
+                // 锁必须覆盖“查最大编号 + 写表”，避免并发请求获得相同编号。
+                String recordId = createFeishuRecord(request, files);
+                request.setRecordId(recordId);
 
-        // 应用索引写入成功后，再写入类型详情和附件资料。
-        createRpaDetailRecord(request);
-        createAttachmentRecords(request, files);
+                // 海能 work 的上架申请已由前端创建，只回填关联应用 ID；其他类型由后端新增申请。
+                if (hainengWork) {
+                    onboardingRecordId = updateHainengWorkOnboardingApplication(request);
+                } else {
+                    onboardingRecordId = createOnboardingApplication(request);
+                }
 
-        // 2. 再调用 EAD 发起流程（透传附件，支持多个）
-        String createFlowInstanceJson = buildCreateFlowInstanceJson(request);
-        MultipartFile[] eadFiles = buildEadFiles(files);
-        int fileCount = countFiles(eadFiles);
-        log.info("组装 createFlowInstance 完成, tableId={}, recordId={}, userAccount={}, sysAndFlowCode={}, fileCount={}, personUserIds={}, json={}",
+                // 应用索引写入成功后，再写入类型详情和附件资料。
+                createRpaDetailRecord(request);
+                createAttachmentRecords(request, files);
+            } catch (RuntimeException ex) {
+                // 写表中途失败：按唯一标识删除本笔已写入的记录。
+                compensateDeleteWrittenTables(request, hainengWork, "多维表写入失败");
+                throw ex;
+            }
+        } finally {
+            releaseIdGenerationLock();
+        }
+
+        // 2. 非海能 work 走 EAD 审批；海能 work（T005）由前端走飞书审批，不发起 EAD。
+        if (hainengWork) {
+            log.info("海能work应用不走EAD审批, uniqueIdentifier={}, onboardingRecordId={}, applicationRecordId={}",
+                    request.getUniqueIdentifier(), onboardingRecordId, request.getRecordId());
+            Map<String, Object> skipped = new LinkedHashMap<String, Object>();
+            skipped.put("success", true);
+            skipped.put("skippedEad", true);
+            skipped.put("reason", "海能work应用不走EAD审批");
+            skipped.put("onboardingRecordId", onboardingRecordId);
+            skipped.put("recordId", request.getRecordId());
+            return skipped;
+        }
+
+        Map<String, MultipartFile[]> normalizedEadFiles = normalizeEadFilesByField(eadFilesByField);
+        String createFlowInstanceJson = buildCreateFlowInstanceJson(request, normalizedEadFiles);
+        int fileCount = countFiles(normalizedEadFiles);
+        log.info("组装 createFlowInstance 完成, tableId={}, recordId={}, userAccount={}, sysAndFlowCode={}, eadFileFields={}, fileCount={}, personUserIds={}, json={}",
                 request.getTableId(),
                 request.getRecordId(),
                 request.getUserAccount(),
                 request.getSysAndFlowCode(),
+                normalizedEadFiles.keySet(),
                 fileCount,
                 resolvePersonUserIds(request),
                 createFlowInstanceJson);
-        return eadProcessService.startProcess(request.getUserAccount(), createFlowInstanceJson, eadFiles);
+
+        Object eadResponse;
+        try {
+            eadResponse = eadProcessService.startProcess(
+                    request.getUserAccount(), createFlowInstanceJson, normalizedEadFiles);
+        } catch (RuntimeException ex) {
+            // EAD 可能已创建流程（如超时），不能删多维表，否则会出现悬空审批。
+            log.error("EAD 发起异常，保留已写入的多维表数据, uniqueIdentifier={}, onboardingRecordId={}",
+                    request.getUniqueIdentifier(), onboardingRecordId, ex);
+            throw ex;
+        }
+
+        String instId = extractEadInstId(eadResponse);
+        if (!StringUtils.hasText(instId)) {
+            // 无 instId 时同样保留多维表，避免误删后与 EAD 侧已存在流程对不上。
+            log.warn("EAD 未返回 instId，保留已写入的多维表数据, uniqueIdentifier={}, onboardingRecordId={}, response={}",
+                    request.getUniqueIdentifier(), onboardingRecordId, eadResponse);
+            if (isEadStartSuccess(eadResponse)) {
+                throw new IllegalStateException("EAD 发起成功但未返回 instId");
+            }
+            return eadResponse;
+        }
+
+        try {
+            bindEadInstanceToOnboarding(onboardingRecordId, eadResponse);
+        } catch (RuntimeException ex) {
+            // 流程已在 EAD 侧创建，不能再删表，否则会出现悬空审批。
+            log.error("EAD 已返回 instId 但回写上架申请失败，保留多维表数据, uniqueIdentifier={}, instId={}, onboardingRecordId={}",
+                    request.getUniqueIdentifier(), instId, onboardingRecordId, ex);
+            throw ex;
+        }
+        return eadResponse;
     }
 
-    private MultipartFile[] buildEadFiles(MultipartFile[] files) {
-        List<MultipartFile> eadFiles = new ArrayList<MultipartFile>();
-        boolean hasVideo = false;
-        if (files != null) {
+    private Map<String, MultipartFile[]> buildLegacyEadFilesByField(MultipartFile[] files) {
+        Map<String, MultipartFile[]> filesByField = new LinkedHashMap<String, MultipartFile[]>();
+        if (files != null && files.length > 0) {
+            filesByField.put(EadConstants.FILES_ATTACHMENT_FIELD, files);
+        }
+        return filesByField;
+    }
+
+    private Map<String, MultipartFile[]> normalizeEadFilesByField(Map<String, MultipartFile[]> source) {
+        Map<String, MultipartFile[]> result = new LinkedHashMap<String, MultipartFile[]>();
+        addEadFiles(result, EadConstants.FILES_ICON_FIELD,
+                source == null ? null : source.get(EadConstants.FILES_ICON_FIELD));
+        addEadFiles(result, EadConstants.FILES_MATERIALS_FIELD,
+                source == null ? null : source.get(EadConstants.FILES_MATERIALS_FIELD));
+        addEadFiles(result, EadConstants.FILES_ATTACHMENT_FIELD,
+                source == null ? null : source.get(EadConstants.FILES_ATTACHMENT_FIELD));
+        return result;
+    }
+
+    private void addEadFiles(Map<String, MultipartFile[]> target, String fieldName, MultipartFile[] files) {
+        if (files == null || files.length == 0) {
+            return;
+        }
+        List<MultipartFile> validFiles = new ArrayList<MultipartFile>();
+        for (MultipartFile file : files) {
+            if (file != null && !file.isEmpty()) {
+                validFiles.add(file);
+            }
+        }
+        if (!validFiles.isEmpty()) {
+            target.put(fieldName, validFiles.toArray(new MultipartFile[validFiles.size()]));
+        }
+    }
+
+    private int countFiles(Map<String, MultipartFile[]> filesByField) {
+        if (filesByField == null || filesByField.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (MultipartFile[] files : filesByField.values()) {
+            if (files == null) {
+                continue;
+            }
             for (MultipartFile file : files) {
-                if (file == null || file.isEmpty()) {
-                    continue;
-                }
-                eadFiles.add(file);
-                if (isVideoFile(file)) {
-                    hasVideo = true;
+                if (file != null && !file.isEmpty()) {
+                    count++;
                 }
             }
         }
-        if (!hasVideo) {
-            String defaultVideoPath = feishuProperties.getDefaultVideoFile();
-            if (!StringUtils.hasText(defaultVideoPath)) {
-                log.info("前端未上传视频，且未配置默认视频，跳过视频附件");
-                return eadFiles.toArray(new MultipartFile[eadFiles.size()]);
-            }
-            Path path = Paths.get(defaultVideoPath.trim()).toAbsolutePath().normalize();
-            if (!Files.isRegularFile(path)) {
-                log.warn("默认视频文件不存在，跳过视频附件: {}", path);
-                return eadFiles.toArray(new MultipartFile[eadFiles.size()]);
-            }
-            eadFiles.add(new LocalPathMultipartFile(path, "video/mp4"));
-            log.info("前端未上传视频，EAD attachment4 使用默认视频, fileName={}", path.getFileName());
-        }
-        return eadFiles.toArray(new MultipartFile[eadFiles.size()]);
+        return count;
     }
 
     private int countFiles(MultipartFile[] files) {
@@ -191,11 +287,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         if (fields.isEmpty()) {
             throw new IllegalArgumentException("未找到目标应用索引表支持的字段");
         }
-        /* 暂停应用类型和关联字典校验，保留代码，后续需要时可恢复。
-        normalizeApplicationType(fields);
-        validateDictionaryFields(fields);
-        */
-        normalizeGeneratedIdentifiers(fields);
+        normalizeGeneratedIdentifiers(request, fields);
         request.setFields(fields);
         createRequest.setFields(fields);
 
@@ -215,125 +307,297 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         return recordId;
     }
 
-    private void normalizeGeneratedIdentifiers(Map<String, Object> fields) {
+    private void normalizeGeneratedIdentifiers(ProcessInstanceStartRequest request,
+                                               Map<String, Object> fields) {
+        String uniqueIdentifierField = FeishuConstants.UNIQUE_IDENTIFIER_FIELD;
+        String uniqueIdentifier = request.getUniqueIdentifier();
+        if (!StringUtils.hasText(uniqueIdentifier)) {
+            uniqueIdentifier = textValue(fields.get(uniqueIdentifierField));
+        }
+        if (!StringUtils.hasText(uniqueIdentifier)) {
+            throw new IllegalArgumentException("uniqueIdentifier 不能为空");
+        }
+        uniqueIdentifier = uniqueIdentifier.trim();
+        request.setUniqueIdentifier(uniqueIdentifier);
+        fields.put(uniqueIdentifierField, uniqueIdentifier);
+
         // 应用 ID 属于系统自增编码，不能接受前端传入值，必须每次查询历史最大值后递增。
-        fields.put("应用ID", nextApplicationId());
+        fields.put(FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD, nextApplicationId());
     }
 
     /**
-     * 应用类型以“应用类型配置”表为准。前端可以传类型 ID、类型编码或类型名称，
-     * 最终统一写入字典表中的“类型ID”。
+     * 后端创建上架申请记录。申请单号按历史最大值递增，关联应用 ID 使用刚创建的应用索引记录。
      */
-    private void normalizeApplicationType(Map<String, Object> fields) {
-        String submittedType = textValue(fields.get("应用类型"));
-        if (!StringUtils.hasText(submittedType)) {
-            throw new IllegalArgumentException("应用类型不能为空");
+    private String createOnboardingApplication(ProcessInstanceStartRequest request) {
+        FeishuProperties.ApprovalPolling approvalConfig = feishuProperties.getApprovalPolling();
+        String appToken = requireConfig("feishu.approval-polling.app-token", approvalConfig.getAppToken());
+        String tableId = requireConfig("feishu.approval-polling.table-id", approvalConfig.getTableId());
+        String uniqueIdentifier = request.getUniqueIdentifier();
+        if (!StringUtils.hasText(uniqueIdentifier)) {
+            throw new IllegalArgumentException("uniqueIdentifier 不能为空，无法创建上架申请");
         }
-        String typeId = findApplicationTypeId(submittedType);
-        fields.put("应用类型", typeId);
-        log.info("应用类型已按字典表转换, submittedType={}, typeId={}", submittedType, typeId);
-    }
 
-    private String findApplicationTypeId(String submittedType) {
-        return findDictionaryValue(
-                APPLICATION_TYPE_TABLE_ID,
-                submittedType,
-                java.util.Arrays.asList("类型ID", "类型名称", "类型编码"),
-                "类型ID",
-                "应用类型");
-    }
-
-    private void validateDictionaryFields(Map<String, Object> fields) {
-        validateDictionaryId(fields, "所属部门ID", DEPARTMENT_DICTIONARY_TABLE_ID, "部门ID");
-        validateDictionaryId(fields, "所属业务域ID", BUSINESS_DOMAIN_DICTIONARY_TABLE_ID, "业务域ID");
-        validateDictionaryId(fields, "所属场景ID", SCENE_DICTIONARY_TABLE_ID, "场景ID");
-
-        String submittedStatus = textValue(fields.get("状态"));
-        if (StringUtils.hasText(submittedStatus)) {
-            String status = findDictionaryValue(
-                    STATUS_DICTIONARY_TABLE_ID,
-                    submittedStatus,
-                    java.util.Arrays.asList("状态ID", "状态"),
-                    "状态",
-                    "状态");
-            fields.put("状态", status);
-            log.info("状态已按字典表转换, submittedStatus={}, status={}", submittedStatus, status);
+        Map<String, Object> sourceFields = request.getFields() == null
+                ? new LinkedHashMap<String, Object>()
+                : request.getFields();
+        Map<String, Object> fields = new LinkedHashMap<String, Object>();
+        fields.put(FeishuConstants.APPLICATION_NO_FIELD, reserveOnboardingApplicationNo(uniqueIdentifier));
+        fields.put(FeishuConstants.UNIQUE_IDENTIFIER_FIELD, uniqueIdentifier.trim());
+        String applicationId = textValue(sourceFields.get(FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD));
+        if (!StringUtils.hasText(applicationId)) {
+            throw new IllegalStateException("应用索引未生成应用 ID，无法创建上架申请");
         }
+        fields.put(FeishuConstants.APPLICATION_ID_FIELD, applicationId);
+        putText(fields, FeishuConstants.APPLICATION_TYPE_ID_FIELD,
+                sourceFields.get(FeishuConstants.APPLICATION_TYPE_FIELD));
+        putText(fields, FeishuConstants.APPLICANT_ID_FIELD,
+                sourceFields.get(FeishuConstants.APPLICANT_ACCOUNT_FIELD));
+        fields.put(FeishuConstants.STATUS_FIELD, FeishuConstants.PENDING_STATUS);
+        fields.put(FeishuConstants.SOURCE_FIELD, FeishuConstants.EAD_SOURCE);
+        fields.put(FeishuConstants.CURRENT_NODE_FIELD, "待审批");
+        fields.put("提交时间", LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+        return createFeishuRecord(appToken, tableId, fields, "上架申请");
     }
 
-    private void validateDictionaryId(Map<String, Object> fields, String submittedFieldName,
-                                      String tableId, String dictionaryFieldName) {
-        String submittedValue = textValue(fields.get(submittedFieldName));
-        if (!StringUtils.hasText(submittedValue)) {
+    private String nextOnboardingApplicationNo() {
+        FeishuProperties.ApprovalPolling approvalConfig = feishuProperties.getApprovalPolling();
+        int max = findHistoricalMaxNumber(
+                requireConfig("feishu.approval-polling.app-token", approvalConfig.getAppToken()),
+                requireConfig("feishu.approval-polling.table-id", approvalConfig.getTableId()),
+                FeishuConstants.APPLICATION_NO_FIELD,
+                "PA");
+        for (String reservedNo : reservedOnboardingApplicationNos.values()) {
+            max = Math.max(max, parseCodeNumber(reservedNo, "PA"));
+        }
+        int nextNumber = max < 0 ? 1 : max + 1;
+        String next = "PA" + String.format("%03d", nextNumber);
+        log.info("已查询上架申请历史最大单号, max={}, next={}", max < 0 ? "无" : max, next);
+        return next;
+    }
+
+    /**
+     * 海能 work 应用的上架申请记录由前端预先创建；后端按唯一标识定位该记录并回填应用 ID。
+     */
+    private String updateHainengWorkOnboardingApplication(ProcessInstanceStartRequest request) {
+        FeishuProperties.ApprovalPolling approvalConfig = feishuProperties.getApprovalPolling();
+        String appToken = requireConfig("feishu.approval-polling.app-token", approvalConfig.getAppToken());
+        String tableId = requireConfig("feishu.approval-polling.table-id", approvalConfig.getTableId());
+        String uniqueIdentifier = request.getUniqueIdentifier();
+        String applicationId = request.getFields() == null ? "" : textValue(
+                request.getFields().get(FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD));
+        if (!StringUtils.hasText(uniqueIdentifier) || !StringUtils.hasText(applicationId)) {
+            throw new IllegalStateException("缺少唯一标识或应用 ID，无法更新海能work上架申请");
+        }
+
+        FeishuRecordSearchRequest searchRequest = new FeishuRecordSearchRequest();
+        searchRequest.setAppToken(appToken);
+        searchRequest.setTableId(tableId);
+        searchRequest.setPageSize(100);
+        searchRequest.setFieldNames(Collections.singletonList(FeishuConstants.UNIQUE_IDENTIFIER_FIELD));
+        searchRequest.setAutomaticFields(Boolean.FALSE);
+        searchRequest.setFilter(equalFilter(FeishuConstants.UNIQUE_IDENTIFIER_FIELD, uniqueIdentifier));
+        List<FeishuRecordSearchVO.RecordItem> records = searchAllRecords(searchRequest);
+        if (records.isEmpty()) {
+            throw new IllegalStateException("海能work上架申请不存在唯一标识: " + uniqueIdentifier);
+        }
+        if (records.size() > 1) {
+            throw new IllegalStateException("海能work上架申请存在重复唯一标识: " + uniqueIdentifier);
+        }
+        FeishuRecordSearchVO.RecordItem record = records.get(0);
+        if (record == null || !StringUtils.hasText(record.getRecordId())) {
+            throw new IllegalStateException("海能work上架申请缺少recordId，唯一标识: " + uniqueIdentifier);
+        }
+
+        Map<String, Object> fields = new LinkedHashMap<String, Object>();
+        fields.put(FeishuConstants.APPLICATION_ID_FIELD, applicationId);
+        // 海能 work 走飞书审批，不写 EAD 审批来源。
+        fields.put(FeishuConstants.SOURCE_FIELD, FeishuConstants.FEISHU_SOURCE);
+        FeishuRecordUpdateRequest updateRequest = new FeishuRecordUpdateRequest();
+        updateRequest.setAppToken(appToken);
+        updateRequest.setTableId(tableId);
+        updateRequest.setRecordId(record.getRecordId());
+        updateRequest.setFields(fields);
+        updateRequest.setIgnoreConsistencyCheck(Boolean.TRUE);
+        feishuBitableService.updateRecord(updateRequest);
+        log.info("已回填海能work上架申请关联应用ID, uniqueIdentifier={}, applicationId={}, recordId={}",
+                uniqueIdentifier, applicationId, record.getRecordId());
+        return record.getRecordId();
+    }
+
+    /**
+     * EAD 发起成功后回写流程实例 ID，供后续回调匹配，并避免重试时重复开流程。
+     */
+    private void bindEadInstanceToOnboarding(String onboardingRecordId, Object eadResponse) {
+        if (!StringUtils.hasText(onboardingRecordId)) {
+            throw new IllegalStateException("上架申请缺少 recordId，无法回写审批实例ID");
+        }
+        String instId = extractEadInstId(eadResponse);
+        if (!StringUtils.hasText(instId)) {
+            throw new IllegalStateException("EAD 未返回 instId，无法回写上架申请");
+        }
+
+        FeishuProperties.ApprovalPolling approvalConfig = feishuProperties.getApprovalPolling();
+        Map<String, Object> fields = new LinkedHashMap<String, Object>();
+        fields.put(FeishuConstants.APPROVAL_INSTANCE_FIELD, instId);
+        fields.put(FeishuConstants.SOURCE_FIELD, FeishuConstants.EAD_SOURCE);
+        FeishuRecordUpdateRequest updateRequest = new FeishuRecordUpdateRequest();
+        updateRequest.setAppToken(requireConfig("feishu.approval-polling.app-token", approvalConfig.getAppToken()));
+        updateRequest.setTableId(requireConfig("feishu.approval-polling.table-id", approvalConfig.getTableId()));
+        updateRequest.setRecordId(onboardingRecordId);
+        updateRequest.setFields(fields);
+        updateRequest.setIgnoreConsistencyCheck(Boolean.TRUE);
+        feishuBitableService.updateRecord(updateRequest);
+        log.info("已回写上架申请审批实例ID, recordId={}, instId={}", onboardingRecordId, instId);
+    }
+
+    /**
+     * 按唯一标识补偿删除本笔已写入的多维表记录。
+     * 删除顺序：附件 → RPA → 上架申请 → 应用索引。
+     * 海能 work 上架申请由前端预创建，补偿时不删除该行。
+     */
+    private void compensateDeleteWrittenTables(ProcessInstanceStartRequest request,
+                                               boolean preserveOnboardingApplication,
+                                               String reason) {
+        String uniqueIdentifier = request == null ? "" : textValue(request.getUniqueIdentifier());
+        if (!StringUtils.hasText(uniqueIdentifier)) {
+            log.warn("补偿删除跳过：唯一标识为空, reason={}", reason);
             return;
         }
-        findDictionaryValue(
-                tableId,
-                submittedValue,
-                Collections.singletonList(dictionaryFieldName),
-                dictionaryFieldName,
-                submittedFieldName);
+
+        log.warn("开始补偿删除本笔多维表数据, uniqueIdentifier={}, preserveOnboarding={}, reason={}",
+                uniqueIdentifier, preserveOnboardingApplication, reason);
+
+        FeishuProperties.ProcessInstance processConfig = processInstanceConfig();
+        FeishuProperties.ApprovalPolling approvalConfig = feishuProperties.getApprovalPolling();
+        String processAppToken = requireConfig("feishu.process-instance.app-token", processConfig.getAppToken());
+        String approvalAppToken = requireConfig("feishu.approval-polling.app-token", approvalConfig.getAppToken());
+
+        deleteRecordsByUniqueIdentifier(processAppToken,
+                requireConfig("feishu.process-instance.attachment-table-id", processConfig.getAttachmentTableId()),
+                uniqueIdentifier, "附件资料");
+        deleteRecordsByUniqueIdentifier(processAppToken,
+                requireConfig("feishu.process-instance.rpa-detail-table-id", processConfig.getRpaDetailTableId()),
+                uniqueIdentifier, "RPA应用详情");
+        if (!preserveOnboardingApplication) {
+            deleteRecordsByUniqueIdentifier(approvalAppToken,
+                    requireConfig("feishu.approval-polling.table-id", approvalConfig.getTableId()),
+                    uniqueIdentifier, "上架申请");
+            reservedOnboardingApplicationNos.remove(uniqueIdentifier);
+        }
+        String applicationIndexTableId = StringUtils.hasText(request.getTableId())
+                ? request.getTableId().trim()
+                : requireConfig("feishu.process-instance.application-index-table-id",
+                processConfig.getApplicationIndexTableId());
+        String applicationIndexAppToken = StringUtils.hasText(request.getAppToken())
+                ? request.getAppToken().trim()
+                : processAppToken;
+        deleteRecordsByUniqueIdentifier(applicationIndexAppToken, applicationIndexTableId,
+                uniqueIdentifier, "应用索引");
+        log.warn("补偿删除结束, uniqueIdentifier={}, reason={}", uniqueIdentifier, reason);
     }
 
-    private String findDictionaryValue(String tableId, String submittedValue,
-                                       List<String> matchFieldNames, String returnFieldName,
-                                       String submittedFieldName) {
-        FeishuRecordSearchRequest searchRequest = new FeishuRecordSearchRequest();
-        searchRequest.setAppToken(DEFAULT_ONBOARDING_APP_TOKEN);
-        searchRequest.setTableId(tableId);
-        searchRequest.setPageSize(500);
-        searchRequest.setFieldNames(matchFieldNames);
-        searchRequest.setAutomaticFields(Boolean.FALSE);
+    private void deleteRecordsByUniqueIdentifier(String appToken, String tableId,
+                                                 String uniqueIdentifier, String tableName) {
+        try {
+            FeishuRecordSearchRequest searchRequest = new FeishuRecordSearchRequest();
+            searchRequest.setAppToken(appToken);
+            searchRequest.setTableId(tableId);
+            searchRequest.setPageSize(100);
+            searchRequest.setFieldNames(Collections.singletonList(FeishuConstants.UNIQUE_IDENTIFIER_FIELD));
+            searchRequest.setAutomaticFields(Boolean.FALSE);
+            searchRequest.setFilter(equalFilter(FeishuConstants.UNIQUE_IDENTIFIER_FIELD, uniqueIdentifier));
+            List<FeishuRecordSearchVO.RecordItem> records = searchAllRecords(searchRequest);
+            if (records.isEmpty()) {
+                log.info("补偿删除未找到记录, tableName={}, tableId={}, uniqueIdentifier={}",
+                        tableName, tableId, uniqueIdentifier);
+                return;
+            }
+            int deleted = 0;
+            for (FeishuRecordSearchVO.RecordItem item : records) {
+                if (item == null || !StringUtils.hasText(item.getRecordId())) {
+                    continue;
+                }
+                FeishuRecordDeleteRequest deleteRequest = new FeishuRecordDeleteRequest();
+                deleteRequest.setAppToken(appToken);
+                deleteRequest.setTableId(tableId);
+                deleteRequest.setRecordId(item.getRecordId());
+                feishuBitableService.deleteRecord(deleteRequest);
+                deleted++;
+            }
+            log.info("补偿删除完成, tableName={}, tableId={}, uniqueIdentifier={}, deleted={}",
+                    tableName, tableId, uniqueIdentifier, deleted);
+        } catch (Exception ex) {
+            // 补偿失败不覆盖原始业务异常，转人工按唯一标识清理。
+            log.error("补偿删除失败，请人工按唯一标识清理, tableName={}, tableId={}, uniqueIdentifier={}",
+                    tableName, tableId, uniqueIdentifier, ex);
+        }
+    }
 
+    private String extractEadInstId(Object eadResponse) {
+        Object instId = firstMapValue(eadResponse, "instId", "inst_id", "instanceId", "instance_id");
+        return instId == null ? "" : String.valueOf(instId).trim();
+    }
+
+    private boolean isEadStartSuccess(Object eadResponse) {
+        Object success = firstMapValue(eadResponse, "success");
+        if (success instanceof Boolean) {
+            return Boolean.TRUE.equals(success);
+        }
+        if (success != null && StringUtils.hasText(String.valueOf(success))) {
+            return Boolean.parseBoolean(String.valueOf(success).trim());
+        }
+        Object code = firstMapValue(eadResponse, "code");
+        return code != null && "200".equals(String.valueOf(code).trim());
+    }
+
+    private Object firstMapValue(Object source, String... names) {
+        if (!(source instanceof Map) || names == null) {
+            return null;
+        }
+        Map<?, ?> map = (Map<?, ?>) source;
+        for (String name : names) {
+            if (map.containsKey(name) && map.get(name) != null) {
+                return map.get(name);
+            }
+        }
+        return null;
+    }
+
+    private List<FeishuRecordSearchVO.RecordItem> searchAllRecords(FeishuRecordSearchRequest request) {
+        List<FeishuRecordSearchVO.RecordItem> records = new ArrayList<FeishuRecordSearchVO.RecordItem>();
+        String pageToken = null;
         do {
-            FeishuRecordSearchVO response = feishuBitableService.searchRecords(searchRequest);
+            request.setPageToken(pageToken);
+            FeishuRecordSearchVO response = feishuBitableService.searchRecords(request);
             if (response == null) {
-                throw new IllegalStateException("查询字典表返回为空, tableId=" + tableId);
+                throw new IllegalStateException("查询上架申请返回为空");
             }
             if (response.getItems() != null) {
-                for (FeishuRecordSearchVO.RecordItem item : response.getItems()) {
-                    if (item == null || item.getFields() == null) {
-                        continue;
-                    }
-                    Map<String, Object> dictionaryFields = item.getFields();
-                    boolean matched = false;
-                    for (String matchFieldName : matchFieldNames) {
-                        if (submittedValue.equalsIgnoreCase(fieldText(dictionaryFields.get(matchFieldName)))) {
-                            matched = true;
-                            break;
-                        }
-                    }
-                    if (matched) {
-                        String returnValue = fieldText(dictionaryFields.get(returnFieldName));
-                        if (!StringUtils.hasText(returnValue)) {
-                            throw new IllegalStateException("字典表匹配记录的返回字段为空, field=" + returnFieldName);
-                        }
-                        return returnValue;
-                    }
-                }
+                records.addAll(response.getItems());
             }
-            if (Boolean.TRUE.equals(response.getHasMore()) && StringUtils.hasText(response.getPageToken())) {
-                searchRequest.setPageToken(response.getPageToken());
-            } else {
-                break;
-            }
-        } while (true);
-
-        throw new IllegalArgumentException(submittedFieldName + "不是有效字典值: " + submittedValue);
+            pageToken = Boolean.TRUE.equals(response.getHasMore()) && StringUtils.hasText(response.getPageToken())
+                    ? response.getPageToken() : null;
+        } while (StringUtils.hasText(pageToken));
+        return records;
     }
 
-    private synchronized String nextApplicationId() {
-        int max = -1;
-        try {
-            max = findHistoricalMaxNumber(
-                    DEFAULT_ONBOARDING_APP_TOKEN,
-                    DEFAULT_ONBOARDING_TABLE_ID,
-                    "应用ID",
-                    "APP");
-        } catch (Exception ex) {
-            // 历史查询失败不应阻断首次申请，按空表从 APP0001 开始。
-            log.warn("查询应用索引历史编号失败，按 APP0001 作为起始编号继续: {}", ex.getMessage());
-        }
+    private FeishuRecordSearchRequest.FilterInfo equalFilter(String fieldName, String value) {
+        FeishuRecordSearchRequest.Condition condition = new FeishuRecordSearchRequest.Condition();
+        condition.setFieldName(fieldName);
+        condition.setOperator("is");
+        condition.setValue(Collections.singletonList(value));
+        FeishuRecordSearchRequest.FilterInfo filter = new FeishuRecordSearchRequest.FilterInfo();
+        filter.setConjunction("and");
+        filter.setConditions(Collections.singletonList(condition));
+        return filter;
+    }
+
+    private String nextApplicationId() {
+        int max = findHistoricalMaxNumber(
+                processInstanceConfig().getAppToken(),
+                processInstanceConfig().getApplicationIndexTableId(),
+                FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD,
+                "APP");
         int nextNumber = max < 0 ? 1 : max + 1;
         if (nextNumber > 9999) {
             throw new IllegalStateException("应用ID已达到 APP9999，无法继续生成四位编号");
@@ -415,13 +679,13 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         Map<String, Object> sourceFields = request.getFields() == null
                 ? new LinkedHashMap<String, Object>()
                 : request.getFields();
-        String applicationType = textValue(sourceFields.get("应用类型"));
+        String applicationType = textValue(sourceFields.get(FeishuConstants.APPLICATION_TYPE_FIELD));
         if (!isRpaType(applicationType)) {
             log.info("当前应用类型不是 RPA，跳过 RPA 应用详情表, applicationType={}", applicationType);
             return;
         }
 
-        String applicationId = textValue(sourceFields.get("应用ID"));
+        String applicationId = textValue(sourceFields.get(FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD));
         if (!StringUtils.hasText(applicationId)) {
             throw new IllegalArgumentException("应用ID不能为空，无法写入RPA应用详情表");
         }
@@ -430,48 +694,29 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
                 : new LinkedHashMap<String, Object>(request.getDetailFields());
         Map<String, Object> fields = new LinkedHashMap<String, Object>();
         // RPA 主键属于系统自增编码，不能被 detailFields 覆盖，必须查询历史后递增。
-        putText(fields, "主键", nextRpaDetailId());
-        putText(fields, "应用ID", applicationId);
+        putText(fields, FeishuConstants.PRIMARY_KEY_FIELD, nextRpaDetailId());
+        putText(fields, FeishuConstants.UNIQUE_IDENTIFIER_FIELD, request.getUniqueIdentifier());
+        putText(fields, FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD, applicationId);
         // 应用编码是业务编码，未填写时保持为空，不用主键或应用 ID 冒充。
-        putText(fields, "应用编码", detailFields.get("应用编码"));
-        putText(fields, "版本号", valueOr(detailFields.get("版本号"), "V1.0"));
-        putText(fields, "备注说明", detailFields.get("备注说明"));
-        putText(fields, "RPA所属平台", detailFields.get("RPA所属平台"));
-        putText(fields, "操作流程步骤", detailFields.get("操作流程步骤"));
-        putText(fields, "应用描述", valueOr(detailFields.get("应用描述"), valueOr(sourceFields.get("摘要"), sourceFields.get("应用简介"))));
-        createFeishuRecord(request.getAppToken(), RPA_DETAIL_TABLE_ID, fields, "RPA应用详情");
+        putText(fields, FeishuConstants.APPLICATION_CODE_FIELD, detailFields.get(FeishuConstants.APPLICATION_CODE_FIELD));
+        putText(fields, FeishuConstants.VERSION_FIELD,
+                valueOr(detailFields.get(FeishuConstants.VERSION_FIELD), "V1.0"));
+        putText(fields, FeishuConstants.REMARKS_FIELD, detailFields.get(FeishuConstants.REMARKS_FIELD));
+        putText(fields, FeishuConstants.RPA_PLATFORM_FIELD, detailFields.get(FeishuConstants.RPA_PLATFORM_FIELD));
+        putText(fields, FeishuConstants.PROCESS_STEPS_FIELD, detailFields.get(FeishuConstants.PROCESS_STEPS_FIELD));
+        putText(fields, FeishuConstants.APPLICATION_DESCRIPTION_FIELD,
+                valueOr(detailFields.get(FeishuConstants.APPLICATION_DESCRIPTION_FIELD),
+                        valueOr(sourceFields.get(FeishuConstants.SUMMARY_FIELD),
+                                sourceFields.get(FeishuConstants.APPLICATION_INTRODUCTION_FIELD))));
+        createFeishuRecord(request.getAppToken(), processInstanceConfig().getRpaDetailTableId(), fields, "RPA应用详情");
     }
 
-    private void validateDetailFields(Map<String, Object> detailFields) {
-        for (Map.Entry<String, Object> entry : detailFields.entrySet()) {
-            String fieldName = entry.getKey();
-            if (GENERATED_FIELDS.contains(fieldName) || "应用ID".equals(fieldName)) {
-                throw new IllegalArgumentException("RPA详情字段不允许由前端传入: " + fieldName);
-            }
-            if (!RPA_DETAIL_WRITABLE_FIELDS.contains(fieldName)) {
-                throw new IllegalArgumentException("RPA详情表不支持字段: " + fieldName);
-            }
-            Object value = entry.getValue();
-            if (value != null && !(value instanceof String)) {
-                throw new IllegalArgumentException("RPA详情字段必须是字符串: " + fieldName);
-            }
-            if (value instanceof String && ((String) value).trim().length() > 500) {
-                throw new IllegalArgumentException("RPA详情字段超过长度限制: " + fieldName + "，最大 500 个字符");
-            }
-        }
-    }
-
-    private synchronized String nextRpaDetailId() {
-        int max = -1;
-        try {
-            max = findHistoricalMaxNumber(
-                    DEFAULT_ONBOARDING_APP_TOKEN,
-                    RPA_DETAIL_TABLE_ID,
-                    "主键",
-                    "RPA");
-        } catch (Exception ex) {
-            log.warn("查询RPA详情历史主键失败，按 RPA0001 作为起始编号继续: {}", ex.getMessage());
-        }
+    private String nextRpaDetailId() {
+        int max = findHistoricalMaxNumber(
+                processInstanceConfig().getAppToken(),
+                processInstanceConfig().getRpaDetailTableId(),
+                FeishuConstants.PRIMARY_KEY_FIELD,
+                "RPA");
         int nextNumber = max < 0 ? 1 : max + 1;
         if (nextNumber > 9999) {
             throw new IllegalStateException("RPA主键已达到 RPA9999，无法继续生成四位编号");
@@ -489,7 +734,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         Map<String, Object> sourceFields = request.getFields() == null
                 ? new LinkedHashMap<String, Object>()
                 : request.getFields();
-        String applicationId = textValue(sourceFields.get("应用ID"));
+        String applicationId = textValue(sourceFields.get(FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD));
         if (!StringUtils.hasText(applicationId)) {
             throw new IllegalArgumentException("应用ID不能为空，无法写入附件资料表");
         }
@@ -508,62 +753,30 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
                     : ("file_" + index);
             String fileToken = feishuMediaService.uploadBitableMedia(request.getAppToken(), file);
             Map<String, Object> fields = new LinkedHashMap<String, Object>();
-            putText(fields, "主键", "ATT" + String.format("%04d", attachmentNumber++));
-            putText(fields, "应用ID", applicationId);
+            putText(fields, FeishuConstants.PRIMARY_KEY_FIELD, "ATT" + String.format("%04d", attachmentNumber++));
+            putText(fields, FeishuConstants.UNIQUE_IDENTIFIER_FIELD, request.getUniqueIdentifier());
+            putText(fields, FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD, applicationId);
             putText(fields, "文件名称", fileName);
             List<Map<String, String>> attachment = new ArrayList<Map<String, String>>(1);
             Map<String, String> attachmentValue = new HashMap<String, String>(2);
             attachmentValue.put("file_token", fileToken);
             attachment.add(attachmentValue);
-            fields.put("附件", attachment);
+            fields.put(FeishuConstants.ATTACHMENT_FIELD, attachment);
             putText(fields, "文件大小", formatFileSize(file.getSize()));
-            putText(fields, "上传时间", LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
-            putText(fields, "上传人ID", uploaderId);
-            createFeishuRecord(request.getAppToken(), ATTACHMENT_TABLE_ID, fields, "附件资料");
+            putText(fields, FeishuConstants.UPLOAD_TIME_FIELD,
+                    LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+            putText(fields, FeishuConstants.UPLOADER_ID_FIELD, uploaderId);
+            createFeishuRecord(request.getAppToken(), processInstanceConfig().getAttachmentTableId(), fields, "附件资料");
         }
         log.info("附件资料表写入完成, applicationId={}, count={}", applicationId, index);
     }
 
-    private void validateAttachments(MultipartFile[] files) {
-        if (files == null || files.length == 0) {
-            return;
-        }
-        int count = 0;
-        for (MultipartFile file : files) {
-            if (file == null || file.isEmpty()) {
-                continue;
-            }
-            count++;
-            String fileName = file.getOriginalFilename();
-            if (!StringUtils.hasText(fileName)) {
-                throw new IllegalArgumentException("附件文件名不能为空");
-            }
-            if (fileName.contains("\\") || fileName.contains("/") || fileName.indexOf('\u0000') >= 0) {
-                throw new IllegalArgumentException("附件文件名不允许包含路径或非法字符: " + fileName);
-            }
-            if (file.getSize() > MAX_ATTACHMENT_SIZE) {
-                throw new IllegalArgumentException("单个附件不能超过 512MB: " + fileName);
-            }
-            if (isImageFile(file) && file.getSize() > MAX_IMAGE_SIZE) {
-                throw new IllegalArgumentException("图片附件不能超过 10MB: " + fileName);
-            }
-        }
-        if (count > MAX_ATTACHMENT_COUNT) {
-            throw new IllegalArgumentException("附件最多上传 5 个");
-        }
-    }
-
-    private synchronized int nextAttachmentNumber() {
-        int max = -1;
-        try {
-            max = findHistoricalMaxNumber(
-                    DEFAULT_ONBOARDING_APP_TOKEN,
-                    ATTACHMENT_TABLE_ID,
-                    "主键",
-                    "ATT");
-        } catch (Exception ex) {
-            log.warn("查询附件资料历史主键失败，按 ATT0001 作为起始编号继续: {}", ex.getMessage());
-        }
+    private int nextAttachmentNumber() {
+        int max = findHistoricalMaxNumber(
+                processInstanceConfig().getAppToken(),
+                processInstanceConfig().getAttachmentTableId(),
+                FeishuConstants.PRIMARY_KEY_FIELD,
+                "ATT");
         int nextNumber = max < 0 ? 1 : max + 1;
         if (nextNumber > 9999) {
             throw new IllegalStateException("附件资料主键已达到 ATT9999，无法继续生成四位编号");
@@ -577,7 +790,8 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         FeishuRecordCreateRequest createRequest = new FeishuRecordCreateRequest();
         createRequest.setAppToken(appToken);
         createRequest.setTableId(tableId);
-        createRequest.setUserIdType(DEFAULT_PERSON_USER_ID_TYPE);
+        createRequest.setUserIdType(requireConfig("feishu.default-person-user-id-type",
+                feishuProperties.getDefaultPersonUserIdType()));
         createRequest.setFields(fields);
         log.info("写入{}，tableId={}, fieldsKeys={}", tableName, tableId, fields.keySet());
         FeishuRecordCreateVO createVO = feishuBitableService.createRecord(createRequest);
@@ -595,28 +809,6 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
                 || "T0003".equalsIgnoreCase(normalized)
                 || "RPA".equalsIgnoreCase(normalized)
                 || normalized.contains("RPA");
-    }
-
-    private String fieldText(Object value) {
-        if (value instanceof List) {
-            List<?> values = (List<?>) value;
-            if (values.isEmpty()) {
-                return "";
-            }
-            Object first = values.get(0);
-            if (first instanceof Map) {
-                Map<?, ?> map = (Map<?, ?>) first;
-                Object text = map.get("text");
-                return StringUtils.hasText(textValue(text)) ? textValue(text) : textValue(map.get("value"));
-            }
-            return textValue(first);
-        }
-        if (value instanceof Map) {
-            Map<?, ?> map = (Map<?, ?>) value;
-            Object text = map.get("text");
-            return StringUtils.hasText(textValue(text)) ? textValue(text) : textValue(map.get("value"));
-        }
-        return textValue(value);
     }
 
     private String textValue(Object value) {
@@ -644,113 +836,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
     }
 
     private Map<String, Object> normalizeOnboardingFields(Map<String, Object> submittedFields) {
-        Map<String, Object> fields = new LinkedHashMap<String, Object>();
-        /* 暂停应用索引字段严格校验，恢复为兼容性字段映射。
-        for (Map.Entry<String, Object> entry : submittedFields.entrySet()) {
-            String fieldName = entry.getKey();
-            if (GENERATED_FIELDS.contains(fieldName)) {
-                throw new IllegalArgumentException("字段不允许由前端传入: " + fieldName);
-            }
-            if (!ONBOARDING_WRITABLE_FIELDS.contains(fieldName) && !"子类型".equals(fieldName)) {
-                throw new IllegalArgumentException("应用索引表不支持字段: " + fieldName);
-            }
-            Object value = entry.getValue();
-            if (value == null) {
-                continue;
-            }
-            if (!(value instanceof String)) {
-                throw new IllegalArgumentException("字段必须是字符串: " + fieldName);
-            }
-            String text = ((String) value).trim();
-            if (StringUtils.hasText(text)) {
-                String targetFieldName = "子类型".equals(fieldName) ? "子类型（待定）" : fieldName;
-                validateOnboardingFieldValue(targetFieldName, text);
-                fields.put(targetFieldName, text);
-            }
-        }
-        */
-        for (String fieldName : ONBOARDING_WRITABLE_FIELDS) {
-            Object value = submittedFields.get(fieldName);
-            if (value != null && (!(value instanceof String) || StringUtils.hasText((String) value))) {
-                fields.put(fieldName, value);
-            }
-        }
-        // 兼容旧前端：只传“应用简介”时，同时作为目标表的摘要。
-        if (!fields.containsKey("摘要")) {
-            Object description = submittedFields.get("应用简介");
-            if (description != null && (!(description instanceof String) || StringUtils.hasText((String) description))) {
-                fields.put("摘要", description);
-            }
-        }
-        if (!fields.containsKey("子类型（待定）")) {
-            Object subtype = submittedFields.get("子类型");
-            if (subtype != null && (!(subtype instanceof String) || StringUtils.hasText((String) subtype))) {
-                fields.put("子类型（待定）", subtype);
-            }
-        }
-        /* 暂停必填、长度、URL、邮箱校验。
-        validateRequiredOnboardingFields(fields);
-        validateUrl(fields, "应用URL地址", true);
-        validateUrl(fields, "移动端地址", false);
-        validateEmail(fields, "联系邮箱");
-        */
-        return fields;
-    }
-
-    private void validateRequiredOnboardingFields(Map<String, Object> fields) {
-        String[] requiredFields = {"应用名称", "应用类型", "应用URL地址", "状态", "所属部门ID", "所属业务域ID", "所属场景ID"};
-        for (String fieldName : requiredFields) {
-            if (!StringUtils.hasText(textValue(fields.get(fieldName)))) {
-                throw new IllegalArgumentException("应用索引表必填字段不能为空: " + fieldName);
-            }
-        }
-    }
-
-    private void validateOnboardingFieldValue(String fieldName, String value) {
-        int maxLength = 200;
-        if ("应用URL地址".equals(fieldName) || "移动端地址".equals(fieldName)) {
-            maxLength = 2048;
-        } else if ("摘要".equals(fieldName) || "应用简介".equals(fieldName)
-                || "开发合作方信息".equals(fieldName) || "权限范围".equals(fieldName)) {
-            maxLength = 500;
-        }
-        if (value.length() > maxLength) {
-            throw new IllegalArgumentException("字段超过长度限制: " + fieldName + "，最大 " + maxLength + " 个字符");
-        }
-    }
-
-    private void validateUrl(Map<String, Object> fields, String fieldName, boolean required) {
-        String value = textValue(fields.get(fieldName));
-        if (!StringUtils.hasText(value)) {
-            if (required) {
-                throw new IllegalArgumentException("URL不能为空: " + fieldName);
-            }
-            return;
-        }
-        if (!value.matches("https?://[^\\s]+")) {
-            throw new IllegalArgumentException("URL格式不正确: " + fieldName);
-        }
-    }
-
-    private void validateEmail(Map<String, Object> fields, String fieldName) {
-        String value = textValue(fields.get(fieldName));
-        if (StringUtils.hasText(value) && !value.matches("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")) {
-            throw new IllegalArgumentException("邮箱格式不正确: " + fieldName);
-        }
-    }
-
-    private boolean isImageFile(MultipartFile file) {
-        String contentType = file.getContentType();
-        if (StringUtils.hasText(contentType) && contentType.toLowerCase().startsWith("image/")) {
-            return true;
-        }
-        String fileName = file.getOriginalFilename();
-        if (!StringUtils.hasText(fileName)) {
-            return false;
-        }
-        String lower = fileName.toLowerCase();
-        return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg")
-                || lower.endsWith(".gif") || lower.endsWith(".svg") || lower.endsWith(".webp");
+        return new LinkedHashMap<String, Object>(submittedFields);
     }
 
     private void updateDefaultPersonFields(ProcessInstanceStartRequest request, String recordId) {
@@ -766,10 +852,10 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         updateRequest.setIgnoreConsistencyCheck(Boolean.TRUE);
         Map<String, Object> fields = new HashMap<String, Object>(4);
         if (!supervisors.isEmpty()) {
-            fields.put(FEISHU_SUPERVISOR_FIELD, supervisors);
+            fields.put(FeishuConstants.SUPERVISOR_FIELD, supervisors);
         }
         if (StringUtils.hasText(employeeNo)) {
-            fields.put(FEISHU_EMPLOYEE_NO_FIELD, employeeNo.trim());
+            fields.put(FeishuConstants.EMPLOYEE_NO_FIELD, employeeNo.trim());
         }
         updateRequest.setFields(fields);
         feishuBitableService.updateRecord(updateRequest);
@@ -827,18 +913,16 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         if (StringUtils.hasText(request.getPersonUserIdType())) {
             return request.getPersonUserIdType().trim();
         }
-        if (StringUtils.hasText(feishuProperties.getDefaultPersonUserIdType())) {
-            return feishuProperties.getDefaultPersonUserIdType().trim();
-        }
-        return DEFAULT_PERSON_USER_ID_TYPE;
+        return requireConfig("feishu.default-person-user-id-type",
+                feishuProperties.getDefaultPersonUserIdType());
     }
 
     private Map<String, List<Map<String, String>>> uploadAttachments(String tableId, MultipartFile[] files) {
         Map<String, List<Map<String, String>>> attachmentsByField = new HashMap<String, List<Map<String, String>>>(2);
         List<Map<String, String>> imageAttachments = new ArrayList<Map<String, String>>();
         List<Map<String, String>> videoAttachments = new ArrayList<Map<String, String>>();
-        attachmentsByField.put(FEISHU_IMAGE_FIELD, imageAttachments);
-        attachmentsByField.put(FEISHU_VIDEO_FIELD, videoAttachments);
+        attachmentsByField.put(FeishuConstants.IMAGE_FIELD, imageAttachments);
+        attachmentsByField.put(FeishuConstants.VIDEO_FIELD, videoAttachments);
         if (files == null || files.length == 0) {
             return attachmentsByField;
         }
@@ -863,7 +947,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
             String fileToken = feishuMediaService.uploadBitableMedia(appToken, namedFile);
             Map<String, String> item = new HashMap<String, String>(2);
             item.put("file_token", fileToken);
-            String targetField = isVideoFile(file) ? FEISHU_VIDEO_FIELD : FEISHU_IMAGE_FIELD;
+            String targetField = isVideoFile(file) ? FeishuConstants.VIDEO_FIELD : FeishuConstants.IMAGE_FIELD;
             attachmentsByField.get(targetField).add(item);
             log.info("飞书附件已上传, displayName={}, targetField={}, fileToken={}", displayName, targetField, fileToken);
         }
@@ -997,32 +1081,70 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
 
     private void applyDefaults(ProcessInstanceStartRequest request) {
         if (!StringUtils.hasText(request.getAppToken())) {
-            request.setAppToken(DEFAULT_ONBOARDING_APP_TOKEN);
+            request.setAppToken(requireConfig("feishu.process-instance.app-token",
+                    processInstanceConfig().getAppToken()));
         }
         if (!StringUtils.hasText(request.getTableId())) {
-            request.setTableId(DEFAULT_ONBOARDING_TABLE_ID);
+            request.setTableId(requireConfig("feishu.process-instance.application-index-table-id",
+                    processInstanceConfig().getApplicationIndexTableId()));
         }
         if (!StringUtils.hasText(request.getUserAccount())) {
-            request.setUserAccount(DEFAULT_USER_ACCOUNT);
-            log.info("userAccount 为空，使用默认值: {}", DEFAULT_USER_ACCOUNT);
+            String defaultUserAccount = requireConfig("ead.default-user-account", eadProperties.getDefaultUserAccount());
+            request.setUserAccount(defaultUserAccount);
+            log.info("userAccount 为空，使用配置默认值: {}", defaultUserAccount);
         }
-        if (!StringUtils.hasText(request.getSysAndFlowCode())) {
-            request.setSysAndFlowCode(DEFAULT_SYS_AND_FLOW_CODE);
-            log.info("sysAndFlowCode 为空，使用默认值: {}", DEFAULT_SYS_AND_FLOW_CODE);
+        if (isRpaApplication(request)) {
+            // RPA 必须以 RPA 流程编码发起；忽略前端误传的通用默认值 test_ztcs。
+            String rpaSysAndFlowCode = requireConfig("ead.rpa-sys-and-flow-code",
+                    eadProperties.getRpaSysAndFlowCode());
+            if (!rpaSysAndFlowCode.equals(request.getSysAndFlowCode())) {
+                log.info("RPA 上架申请 sysAndFlowCode 从 [{} 调整为 RPA 流程配置: {}",
+                        request.getSysAndFlowCode(), rpaSysAndFlowCode);
+                request.setSysAndFlowCode(rpaSysAndFlowCode);
+            }
+        } else if (!StringUtils.hasText(request.getSysAndFlowCode())) {
+            String defaultSysAndFlowCode = requireConfig("ead.default-sys-and-flow-code",
+                    eadProperties.getDefaultSysAndFlowCode());
+            request.setSysAndFlowCode(defaultSysAndFlowCode);
+            log.info("sysAndFlowCode 为空，使用配置默认值: {}", defaultSysAndFlowCode);
         }
     }
 
-    private String buildCreateFlowInstanceJson(ProcessInstanceStartRequest request) {
-        List<Map<String, String>> inputs = new ArrayList<Map<String, String>>();
-        inputs.add(buildInput("title", request.getTitle()));
-        inputs.add(buildInput("tableID", request.getTableId()));
-        inputs.add(buildInput("recordId", request.getRecordId()));
-        if (StringUtils.hasText(request.getApproverDepartment())) {
-            inputs.add(buildInput("approverDepartment", request.getApproverDepartment()));
+    private boolean isRpaApplication(ProcessInstanceStartRequest request) {
+        if (request.getFields() == null) {
+            return false;
         }
-        if (StringUtils.hasText(request.getCcDepartment())) {
-            inputs.add(buildInput("ccDepartment", request.getCcDepartment()));
+        String applicationType = valueAsString(request.getFields().get(FeishuConstants.APPLICATION_TYPE_FIELD));
+        if (isRpaType(applicationType)) {
+            return true;
         }
+        String rpaApplicationTypeCode = feishuProperties.getRpaApplicationTypeCode();
+        return StringUtils.hasText(rpaApplicationTypeCode)
+                && rpaApplicationTypeCode.trim().equalsIgnoreCase(applicationType.trim());
+    }
+
+    private boolean isHainengWorkApplication(ProcessInstanceStartRequest request) {
+        if (request.getFields() == null) {
+            return false;
+        }
+        return "T005".equalsIgnoreCase(valueAsString(
+                request.getFields().get(FeishuConstants.APPLICATION_TYPE_FIELD)).trim());
+    }
+
+    private FeishuProperties.ProcessInstance processInstanceConfig() {
+        return feishuProperties.getProcessInstance();
+    }
+
+    private String requireConfig(String propertyName, String value) {
+        if (!StringUtils.hasText(value)) {
+            throw new IllegalStateException("未配置 " + propertyName);
+        }
+        return value.trim();
+    }
+
+    private String buildCreateFlowInstanceJson(ProcessInstanceStartRequest request,
+                                               Map<String, MultipartFile[]> eadFilesByField) {
+        List<Map<String, String>> inputs = buildEadInputs(request, eadFilesByField);
 
         Map<String, Object> body = new HashMap<String, Object>(4);
         body.put("inputs", inputs);
@@ -1041,4 +1163,122 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         input.put("value", value);
         return input;
     }
+
+    private List<Map<String, String>> buildEadInputs(ProcessInstanceStartRequest request,
+                                                      Map<String, MultipartFile[]> eadFilesByField) {
+        Map<String, Object> values = defaultEadInputValues(request);
+        if (request.getEadInputs() != null) {
+            values.putAll(request.getEadInputs());
+        }
+        // 唯一标识必须以本次上架申请为准，不能被前端 eadInputs 覆盖。
+        values.put(EadConstants.BIZ_UNIQUE_KEY, request.getUniqueIdentifier());
+
+        List<Map<String, String>> inputs = new ArrayList<Map<String, String>>();
+        for (String inputName : EadConstants.INPUT_NAMES) {
+            inputs.add(buildInput(inputName, valueAsString(values.get(inputName))));
+        }
+        inputs.add(buildInput(EadConstants.FILES_ICON_FIELD,
+                buildEadFileMetadata(eadFilesByField.get(EadConstants.FILES_ICON_FIELD))));
+        inputs.add(buildInput(EadConstants.FILES_MATERIALS_FIELD,
+                buildEadFileMetadata(eadFilesByField.get(EadConstants.FILES_MATERIALS_FIELD))));
+        inputs.add(buildInput(EadConstants.FILES_ATTACHMENT_FIELD,
+                buildEadFileMetadata(eadFilesByField.get(EadConstants.FILES_ATTACHMENT_FIELD))));
+        return inputs;
+    }
+
+    private Map<String, Object> defaultEadInputValues(ProcessInstanceStartRequest request) {
+        Map<String, Object> sourceFields = request.getFields() == null
+                ? Collections.<String, Object>emptyMap()
+                : request.getFields();
+        Map<String, Object> detailFields = request.getDetailFields() == null
+                ? Collections.<String, Object>emptyMap()
+                : request.getDetailFields();
+        Map<String, Object> values = new LinkedHashMap<String, Object>();
+        values.put("applicant", sourceFields.get(FeishuConstants.APPLICANT_ACCOUNT_FIELD));
+        values.put("department", eadOptionLabel(sourceFields.get(FeishuConstants.DEPARTMENT_ID_FIELD),
+                EAD_DEPARTMENT_LABELS));
+        values.put("phone", sourceFields.get(FeishuConstants.PHONE_FIELD));
+        values.put("email", sourceFields.get(FeishuConstants.EMAIL_FIELD));
+        values.put("name", sourceFields.get(FeishuConstants.APPLICATION_NAME_FIELD));
+        values.put("type", eadOptionLabel(sourceFields.get(FeishuConstants.APPLICATION_TYPE_FIELD),
+                EAD_APPLICATION_TYPE_LABELS));
+        values.put("domain", eadOptionLabel(sourceFields.get(FeishuConstants.BUSINESS_DOMAIN_ID_FIELD),
+                EAD_BUSINESS_DOMAIN_LABELS));
+        values.put("summary", sourceFields.get(FeishuConstants.SUMMARY_FIELD));
+        values.put("scenario", sourceFields.get(FeishuConstants.APPLICATION_INTRODUCTION_FIELD));
+        values.put("collaboration", sourceFields.get(FeishuConstants.COLLABORATION_FIELD));
+        values.put("webAddress", sourceFields.get(FeishuConstants.WEB_ADDRESS_FIELD));
+        values.put("mobileAddress", sourceFields.get(FeishuConstants.MOBILE_ADDRESS_FIELD));
+        values.put("contactDepartment", eadOptionLabel(sourceFields.get(FeishuConstants.DEPARTMENT_ID_FIELD),
+                EAD_DEPARTMENT_LABELS));
+        values.put("contact", sourceFields.get(FeishuConstants.CONTACT_ACCOUNT_FIELD));
+        values.put("contactPhone", sourceFields.get(FeishuConstants.PHONE_FIELD));
+        values.put("contactEmail", sourceFields.get(FeishuConstants.EMAIL_FIELD));
+        values.put("accessDepartment", eadOptionLabel(sourceFields.get(FeishuConstants.APPLICABLE_DEPARTMENT_ID_FIELD),
+                EAD_DEPARTMENT_LABELS));
+        values.put("users", sourceFields.get(FeishuConstants.APPLICABLE_USER_ACCOUNT_FIELD));
+        values.put("roles", sourceFields.get(FeishuConstants.APPLICABLE_ROLE_FIELD));
+        values.put("radio38", permissionScopeLabel(sourceFields.get(FeishuConstants.PERMISSION_SCOPE_FIELD)));
+        values.put("remarks", detailFields.get(FeishuConstants.REMARKS_FIELD));
+        values.put(EadConstants.BIZ_UNIQUE_KEY, request.getUniqueIdentifier());
+        return values;
+    }
+
+    private static Map<String, String> optionMap(String... entries) {
+        Map<String, String> result = new LinkedHashMap<String, String>();
+        for (int index = 0; index + 1 < entries.length; index += 2) {
+            result.put(entries[index], entries[index + 1]);
+        }
+        return Collections.unmodifiableMap(result);
+    }
+
+    private String eadOptionLabel(Object value, Map<String, String> labels) {
+        String text = valueAsString(value);
+        if (!StringUtils.hasText(text)) {
+            return text;
+        }
+        return labels.getOrDefault(text.trim(), text.trim());
+    }
+
+    private String permissionScopeLabel(Object value) {
+        String text = valueAsString(value);
+        return text.contains("全部") ? "全部组织可见" : "仅开放给部分部门/用户";
+    }
+
+    private String buildEadFileMetadata(MultipartFile[] files) {
+        List<Map<String, String>> metadata = new ArrayList<Map<String, String>>();
+        if (files != null) {
+            for (MultipartFile file : files) {
+                if (file == null || file.isEmpty()) {
+                    continue;
+                }
+                Map<String, String> item = new LinkedHashMap<String, String>();
+                item.put("fileName", StringUtils.hasText(file.getOriginalFilename())
+                        ? file.getOriginalFilename() : "unnamed.bin");
+                metadata.add(item);
+            }
+        }
+        try {
+            return objectMapper.writeValueAsString(metadata);
+        } catch (Exception ex) {
+            throw new IllegalStateException("组装 EAD 附件元数据失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    private String valueAsString(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private void acquireIdGenerationLock() {
+        if (!ID_GENERATION_LOCK.tryLock()) {
+            throw new IllegalStateException("正在生成应用编号，请稍后重试");
+        }
+    }
+
+    private void releaseIdGenerationLock() {
+        if (ID_GENERATION_LOCK.isHeldByCurrentThread()) {
+            ID_GENERATION_LOCK.unlock();
+        }
+    }
+
 }

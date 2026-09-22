@@ -2,6 +2,7 @@ package com.haiyou.shuzhi.exhibition.service;
 
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordCreateRequest;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordCreateVO;
+import com.haiyou.shuzhi.exhibition.dto.FeishuRecordDeleteRequest;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordSearchRequest;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordSearchVO;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordUpdateRequest;
@@ -38,4 +39,11 @@ public interface FeishuBitableService {
      * @return 更新后的记录
      */
     FeishuRecordUpdateVO updateRecord(FeishuRecordUpdateRequest request);
+
+    /**
+     * 删除多维表格记录
+     *
+     * @param request 删除请求
+     */
+    void deleteRecord(FeishuRecordDeleteRequest request);
 }

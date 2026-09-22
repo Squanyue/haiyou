@@ -2,7 +2,6 @@ package com.haiyou.shuzhi.exhibition.dto;
 
 import lombok.Data;
 
-import javax.validation.constraints.NotBlank;
 import java.io.Serializable;
 import java.util.Map;
 
@@ -33,13 +32,18 @@ public class ProcessInstanceStartRequest implements Serializable {
     private String recordId;
 
     /**
+     * 上架申请业务唯一标识；同时写入应用索引，并作为 EAD bizUniqueKey。
+     */
+    private String uniqueIdentifier;
+
+    /**
      * 流程标题
      */
-    @NotBlank(message = "title 不能为空")
     private String title;
 
     /**
-     * EAD 流程编码，前端为空时默认 test_ztcs
+     * EAD 流程编码。RPA（T003）由后端强制使用 ead.rpa-sys-and-flow-code；
+     * 其它类型前端为空时用 ead.default-sys-and-flow-code。
      */
     private String sysAndFlowCode;
 
@@ -73,6 +77,11 @@ public class ProcessInstanceStartRequest implements Serializable {
      * EAD 抄送部门编码（前端选择值转换后传入）
      */
     private String ccDepartment;
+
+    /**
+     * EAD 流程表单输入，key 使用 EAD 流程定义的英文参数名。
+     */
+    private Map<String, Object> eadInputs;
 
     /**
      * 实际写入飞书多维表的字段值，key 使用飞书表字段名。

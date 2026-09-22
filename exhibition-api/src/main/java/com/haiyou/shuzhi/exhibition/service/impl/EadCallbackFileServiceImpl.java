@@ -191,7 +191,7 @@ public class EadCallbackFileServiceImpl implements EadCallbackFileService {
     private Path resolveRootDir() {
         String dir = eadProperties.getCallbackFileDir();
         if (!StringUtils.hasText(dir)) {
-            dir = "D:/haiyou/shuzhi/code/file";
+            dir = "E:/haiyou/shuzhi/code/file";
         }
         return Paths.get(dir).toAbsolutePath().normalize();
     }
