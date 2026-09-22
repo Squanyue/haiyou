@@ -1,6 +1,7 @@
 package com.haiyou.shuzhi.exhibition.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.haiyou.shuzhi.exhibition.common.EadConstants;
 import com.haiyou.shuzhi.exhibition.config.EadProperties;
 import com.haiyou.shuzhi.exhibition.dto.EadTokenVO;
 import com.haiyou.shuzhi.exhibition.service.EadAuthService;
@@ -23,6 +24,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * EAD 流程服务实现
@@ -34,8 +37,9 @@ import java.nio.charset.StandardCharsets;
 @Service
 public class EadProcessServiceImpl implements EadProcessService {
 
-    private static final String EAD_IMAGE_FIELD = "attachmentPicture3";
-    private static final String EAD_VIDEO_FIELD = "attachment4";
+    private static final String EAD_ICON_FIELD = "filesIcon";
+    private static final String EAD_MATERIALS_FIELD = "filesMaterials";
+    private static final String EAD_ATTACHMENT_FIELD = "filesAttachment";
 
     private final RestTemplate eadRestTemplate;
     private final EadProperties eadProperties;
@@ -54,6 +58,15 @@ public class EadProcessServiceImpl implements EadProcessService {
 
     @Override
     public Object startProcess(String userAccount, String formJson, MultipartFile[] files) {
+        Map<String, MultipartFile[]> filesByField = new LinkedHashMap<String, MultipartFile[]>();
+        if (files != null && files.length > 0) {
+            filesByField.put(EAD_ATTACHMENT_FIELD, files);
+        }
+        return startProcess(userAccount, formJson, filesByField);
+    }
+
+    @Override
+    public Object startProcess(String userAccount, String formJson, Map<String, MultipartFile[]> filesByField) {
         if (!StringUtils.hasText(userAccount)) {
             throw new IllegalArgumentException("userAccount 不能为空");
         }
@@ -70,7 +83,7 @@ public class EadProcessServiceImpl implements EadProcessService {
             throw new IllegalStateException("获取 EAD access_token 失败");
         }
 
-        String jsonFieldName = eadProperties.getProcessStartJsonField();
+        String jsonFieldName = EadConstants.PROCESS_START_JSON_FIELD;
         if (jsonFieldName == null) {
             jsonFieldName = "";
         }
@@ -82,7 +95,7 @@ public class EadProcessServiceImpl implements EadProcessService {
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<String, Object>();
         body.add(jsonFieldName, jsonPart);
 
-        int fileCount = appendFiles(body, files);
+        int fileCount = appendFiles(body, filesByField);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
@@ -90,10 +103,11 @@ public class EadProcessServiceImpl implements EadProcessService {
         HttpEntity<MultiValueMap<String, Object>> requestEntity =
                 new HttpEntity<MultiValueMap<String, Object>>(body, headers);
 
-        log.info("调用 EAD 发起流程, url={}, userAccount={}, jsonFieldName={}, fileCount={}",
+        log.info("调用 EAD 发起流程, url={}, userAccount={}, jsonFieldName={}, fileFields={}, fileCount={}",
                 eadProperties.getProcessStartUrl(),
                 userAccount,
                 jsonFieldName,
+                filesByField == null ? "[]" : filesByField.keySet(),
                 fileCount);
         log.info("EAD 发起流程 formJson={}", formJson);
 
@@ -109,20 +123,37 @@ public class EadProcessServiceImpl implements EadProcessService {
         }
     }
 
-    private int appendFiles(MultiValueMap<String, Object> body, MultipartFile[] files) {
-        if (files == null || files.length == 0) {
+    private int appendFiles(MultiValueMap<String, Object> body, Map<String, MultipartFile[]> filesByField) {
+        if (filesByField == null || filesByField.isEmpty()) {
             return 0;
         }
         int count = 0;
-        for (MultipartFile file : files) {
-            if (file == null || file.isEmpty()) {
+        String[] fieldNames = {EAD_ICON_FIELD, EAD_MATERIALS_FIELD, EAD_ATTACHMENT_FIELD};
+        for (String fieldName : fieldNames) {
+            MultipartFile[] files = filesByField.get(fieldName);
+            if (files == null) {
                 continue;
             }
-            String fieldName = isImageFile(file) ? EAD_IMAGE_FIELD : EAD_VIDEO_FIELD;
-            addFilePart(body, fieldName, file);
-            count++;
-            log.info("EAD 附件按类型映射, fileName={}, contentType={}, fieldName={}",
-                    file.getOriginalFilename(), file.getContentType(), fieldName);
+            int validFileCount = 0;
+            for (MultipartFile file : files) {
+                if (file != null && !file.isEmpty()) {
+                    validFileCount++;
+                }
+            }
+            boolean indexedField = validFileCount > 1;
+            int fieldIndex = 0;
+            for (MultipartFile file : files) {
+                if (file == null || file.isEmpty()) {
+                    continue;
+                }
+                String multipartFieldName = indexedField
+                        ? fieldName + "[" + fieldIndex++ + "]"
+                        : fieldName;
+                addFilePart(body, multipartFieldName, file);
+                count++;
+                log.info("EAD 附件转发, fileName={}, contentType={}, fieldName={}",
+                        file.getOriginalFilename(), file.getContentType(), multipartFieldName);
+            }
         }
         return count;
     }
@@ -154,24 +185,6 @@ public class EadProcessServiceImpl implements EadProcessService {
                 .filename(safeName, StandardCharsets.UTF_8)
                 .build());
         body.add(fieldName, new HttpEntity<ByteArrayResource>(fileResource, fileHeaders));
-    }
-
-    private boolean isImageFile(MultipartFile file) {
-        String contentType = file.getContentType();
-        if (StringUtils.hasText(contentType) && contentType.toLowerCase().startsWith("image/")) {
-            return true;
-        }
-        String fileName = file.getOriginalFilename();
-        if (!StringUtils.hasText(fileName)) {
-            return false;
-        }
-        String lowerName = fileName.toLowerCase();
-        return lowerName.endsWith(".jpg")
-                || lowerName.endsWith(".jpeg")
-                || lowerName.endsWith(".png")
-                || lowerName.endsWith(".gif")
-                || lowerName.endsWith(".bmp")
-                || lowerName.endsWith(".webp");
     }
 
     private byte[] readBytes(MultipartFile file) {

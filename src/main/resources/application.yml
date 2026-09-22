@@ -57,20 +57,55 @@ feishu:
   # 新增记录时默认写入「人员」字段的用户 ID（open_id），例如姜博文；不配则仅当前端传入时写入
   default-person-user-id: ou_a92f9fc269402e7fecb2655726e9a6c9
   default-person-user-id-type: open_id
+  # RPA 应用类型编码
+  rpa-application-type-code: T003
   # 「人员.直属上级」默认写入王倩
   default-supervisor-user-id: ou_a1e8b37926cb4bb21d3e70151a6e33dc
   # 「人员.工号」前端未传时的默认值
   default-person-employee-no: TEST-001
+  # 发起 EAD 前写入的应用索引、RPA 详情和附件资料表。
+  process-instance:
+    app-token: WlrRbzs3ia2EUBsI2qscO7Ajn1g
+    application-index-table-id: tbl1Tvwl7t5RxcMs
+    rpa-detail-table-id: tbl5Ks8cFcZeaWNN
+    attachment-table-id: tbl4ImRqwcoGGpIX
+  # 审批回传配置：上架申请/使用申请等表位于审批专用 Base。
+  # 当前上架申请表链接对应的 table_id 为 tbl3z0pkeEWqlJRZ。
+  approval-polling:
+    enabled: true
+    # 上架 / 使用飞书轮询可独立开关；总开关 enabled=false 时两者都不跑。
+    onboarding-enabled: true
+    use-enabled: true
+    interval-ms: 300000
+    initial-delay-ms: 10000
+    # 使用申请未单独配置间隔时，复用上面的 interval-ms / initial-delay-ms。
+    # use-interval-ms: 300000
+    # use-initial-delay-ms: 15000
+    app-token: WlrRbzs3ia2EUBsI2qscO7Ajn1g
+    table-id: tbl3z0pkeEWqlJRZ
+    use-table-id: tbl2x8E8crDcE4hH
+    application-index-table-id: tbl1Tvwl7t5RxcMs
+    user-dictionary-table-id: tbl6BATW8d1ahsbm
+    user-permission-table-id: tbl15RmmDtr4H5Fi
+    notification-table-id: tbl40wTAGiMt3KcX
+    # 应用上架审批通过后，向负责人、开发者、上架申请人发放应用建设积分。
+    points-balance-table-id: tbl4GtW9v31QaMxH
+    query-retry-count: 3
+    lock-timeout-seconds: 600
 
 ead:
   token-url: https://wzgyl.uatead.cnooc/api/we-open/v1/wethirdpartysystemlogin/getToken
   app-id: 8HJhzIaD
   app-secret: de0d50ea1e0d4374a7d24ff0a118f2838491c5c7
   process-start-url: http://wzgyl.uatead.cnooc/xcoa/api/framework/v1/extra-process-drive/process-instance/start
-  # 发起流程时 JSON 表单字段名
-  process-start-json-field: createFlowInstance
+  # 前端未传时使用的 EAD 发起参数。
+  default-user-account: ex_guansheng
+  # 通用流程编码；非 RPA 流程且前端未传 sysAndFlowCode 时使用。
+  default-sys-and-flow-code: test_ztcs
+  # RPA 应用上架审批流程编码。
+  rpa-sys-and-flow-code: test_szzt
   # EAD 回调附件本地保存目录
-  callback-file-dir: D:/haiyou/shuzhi/code/file
+  callback-file-dir: E:/haiyou/shuzhi/code/file
 
 logging:
   level:

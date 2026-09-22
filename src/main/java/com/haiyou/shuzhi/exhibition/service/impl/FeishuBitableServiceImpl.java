@@ -4,6 +4,8 @@ import com.haiyou.shuzhi.exhibition.config.FeishuProperties;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordCreateRequest;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordCreateResponse;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordCreateVO;
+import com.haiyou.shuzhi.exhibition.dto.FeishuRecordDeleteRequest;
+import com.haiyou.shuzhi.exhibition.dto.FeishuRecordDeleteResponse;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordSearchRequest;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordSearchResponse;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordSearchVO;
@@ -45,6 +47,7 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
     private static final String SEARCH_PATH = "/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/search";
     private static final String CREATE_PATH = "/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records";
     private static final String UPDATE_PATH = "/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/{record_id}";
+    private static final String DELETE_PATH = "/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/{record_id}";
 
     private final RestTemplate restTemplate;
     private final FeishuProperties feishuProperties;
@@ -162,12 +165,42 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
         return vo;
     }
 
+    @Override
+    public void deleteRecord(FeishuRecordDeleteRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("请求体不能为空");
+        }
+
+        String appToken = resolveValue(request.getAppToken(), feishuProperties.getAppToken());
+        String tableId = resolveValue(request.getTableId(), feishuProperties.getTableId());
+        String recordId = request.getRecordId();
+        if (!StringUtils.hasText(appToken) || !StringUtils.hasText(tableId) || !StringUtils.hasText(recordId)) {
+            throw new IllegalArgumentException("appToken、tableId、recordId 不能为空");
+        }
+
+        String accessToken = resolveAccessToken(request.getAccessToken());
+        String url = feishuProperties.getBaseUrl() + DELETE_PATH
+                .replace("{app_token}", appToken)
+                .replace("{table_id}", tableId)
+                .replace("{record_id}", recordId);
+
+        log.info("调用飞书删除记录, appToken={}, tableId={}, recordId={}", appToken, tableId, recordId);
+        FeishuRecordDeleteResponse response = exchange(
+                url, HttpMethod.DELETE, accessToken, null, FeishuRecordDeleteResponse.class, "删除记录");
+
+        if (response.getCode() == null || response.getCode() != 0) {
+            throwFeishuError(response.getCode(), response.getMsg());
+        }
+    }
+
     private <T> T exchange(String url, HttpMethod method, String accessToken, Object body,
                            Class<T> responseType, String actionName) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken);
-        HttpEntity<Object> entity = new HttpEntity<Object>(body, headers);
+        HttpEntity<Object> entity = body == null
+                ? new HttpEntity<Object>(headers)
+                : new HttpEntity<Object>(body, headers);
 
         try {
             ResponseEntity<T> responseEntity = restTemplate.exchange(url, method, entity, responseType);

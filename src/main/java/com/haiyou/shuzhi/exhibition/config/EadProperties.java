@@ -18,7 +18,7 @@ public class EadProperties {
     /**
      * 获取令牌完整地址
      */
-    private String tokenUrl = "https://wzgyl.uatead.cnooc/api/we-open/v1/wethirdpartysystemlogin/getToken";
+    private String tokenUrl;
 
     /**
      * 第三方系统 appId
@@ -33,16 +33,25 @@ public class EadProperties {
     /**
      * 发起流程完整地址
      */
-    private String processStartUrl =
-            "http://wzgyl.uatead.cnooc/xcoa/api/framework/v1/extra-process-drive/process-instance/start";
+    private String processStartUrl;
 
     /**
-     * 发起流程时 JSON 表单字段名（Apipost 中为 createFlowInstance）
+     * 前端未传 userAccount 时使用的 EAD 账号。
      */
-    private String processStartJsonField = "createFlowInstance";
+    private String defaultUserAccount;
+
+    /**
+     * 前端未传流程编码时使用的 EAD 流程编码。
+     */
+    private String defaultSysAndFlowCode;
+
+    /**
+     * RPA 应用上架审批使用的 EAD 流程编码。
+     */
+    private String rpaSysAndFlowCode;
 
     /**
      * EAD 回调附件本地保存目录
      */
-    private String callbackFileDir = "D:/haiyou/shuzhi/code/file";
+    private String callbackFileDir;
 }

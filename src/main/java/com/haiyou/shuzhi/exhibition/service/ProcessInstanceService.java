@@ -3,6 +3,8 @@ package com.haiyou.shuzhi.exhibition.service;
 import com.haiyou.shuzhi.exhibition.dto.ProcessInstanceStartRequest;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.Map;
+
 /**
  * 流程发起业务服务
  *
@@ -19,4 +21,23 @@ public interface ProcessInstanceService {
      * @return EAD 响应
      */
     Object start(ProcessInstanceStartRequest request, MultipartFile[] files);
+
+    /**
+     * 组装参数并调用 EAD 发起流程，保留附件在 EAD 表单中的字段名。
+     *
+     * @param request 前端入参
+     * @param files 所有附件，用于落库
+     * @param eadFilesByField EAD 附件字段名到文件列表的映射
+     * @return EAD 响应
+     */
+    default Object start(ProcessInstanceStartRequest request,
+                         MultipartFile[] files,
+                         Map<String, MultipartFile[]> eadFilesByField) {
+        return start(request, files);
+    }
+
+    /**
+     * 预占上架申请单号。重复传入同一唯一标识时，必须返回同一个申请单号。
+     */
+    String reserveOnboardingApplicationNo(String uniqueIdentifier);
 }
