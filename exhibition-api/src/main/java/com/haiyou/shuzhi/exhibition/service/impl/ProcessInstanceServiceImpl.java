@@ -50,6 +50,9 @@ import java.util.concurrent.locks.ReentrantLock;
 @RequiredArgsConstructor
 public class ProcessInstanceServiceImpl implements ProcessInstanceService {
 
+    private static final DateTimeFormatter DATE_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
     /** EAD 下拉字段使用中文选项值；飞书内部字段仍保留业务编码。 */
     private static final Map<String, String> EAD_APPLICATION_TYPE_LABELS = optionMap(
             "T007", "可视化",
@@ -323,6 +326,12 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
 
         // 应用 ID 属于系统自增编码，不能接受前端传入值，必须每次查询历史最大值后递增。
         fields.put(FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD, nextApplicationId());
+        // 创建日期 / 最近更新日期是业务文本列，不等于飞书系统「创建时间」。
+        String now = LocalDateTime.now().format(DATE_TIME_FORMATTER);
+        if (!StringUtils.hasText(textValue(fields.get(FeishuConstants.APPLICATION_INDEX_CREATED_AT_FIELD)))) {
+            fields.put(FeishuConstants.APPLICATION_INDEX_CREATED_AT_FIELD, now);
+        }
+        fields.put(FeishuConstants.APPLICATION_INDEX_UPDATED_AT_FIELD, now);
     }
 
     /**
@@ -352,10 +361,12 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
                 sourceFields.get(FeishuConstants.APPLICATION_TYPE_FIELD));
         putText(fields, FeishuConstants.APPLICANT_ID_FIELD,
                 sourceFields.get(FeishuConstants.APPLICANT_ACCOUNT_FIELD));
-        fields.put(FeishuConstants.STATUS_FIELD, FeishuConstants.PENDING_STATUS);
+        putAuthorizedAudience(fields, sourceFields);
+        // 落表先待提交，EAD 发起成功后再改为审批中。
+        fields.put(FeishuConstants.STATUS_FIELD, FeishuConstants.TO_SUBMIT_STATUS);
         fields.put(FeishuConstants.SOURCE_FIELD, FeishuConstants.EAD_SOURCE);
-        fields.put(FeishuConstants.CURRENT_NODE_FIELD, "待审批");
-        fields.put("提交时间", LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+        fields.put(FeishuConstants.CURRENT_NODE_FIELD, FeishuConstants.TO_SUBMIT_STATUS);
+        fields.put("提交时间", LocalDateTime.now().format(DATE_TIME_FORMATTER));
         return createFeishuRecord(appToken, tableId, fields, "上架申请");
     }
 
@@ -410,6 +421,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
 
         Map<String, Object> fields = new LinkedHashMap<String, Object>();
         fields.put(FeishuConstants.APPLICATION_ID_FIELD, applicationId);
+        putAuthorizedAudience(fields, request.getFields());
         // 海能 work 走飞书审批，不写 EAD 审批来源。
         fields.put(FeishuConstants.SOURCE_FIELD, FeishuConstants.FEISHU_SOURCE);
         FeishuRecordUpdateRequest updateRequest = new FeishuRecordUpdateRequest();
@@ -425,7 +437,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
     }
 
     /**
-     * EAD 发起成功后回写流程实例 ID，供后续回调匹配，并避免重试时重复开流程。
+     * EAD 发起成功后回写流程实例 ID，并把上架申请从「待提交」改为「审批中」。
      */
     private void bindEadInstanceToOnboarding(String onboardingRecordId, Object eadResponse) {
         if (!StringUtils.hasText(onboardingRecordId)) {
@@ -440,6 +452,8 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         Map<String, Object> fields = new LinkedHashMap<String, Object>();
         fields.put(FeishuConstants.APPROVAL_INSTANCE_FIELD, instId);
         fields.put(FeishuConstants.SOURCE_FIELD, FeishuConstants.EAD_SOURCE);
+        fields.put(FeishuConstants.STATUS_FIELD, FeishuConstants.PENDING_STATUS);
+        fields.put(FeishuConstants.CURRENT_NODE_FIELD, "待审批");
         FeishuRecordUpdateRequest updateRequest = new FeishuRecordUpdateRequest();
         updateRequest.setAppToken(requireConfig("feishu.approval-polling.app-token", approvalConfig.getAppToken()));
         updateRequest.setTableId(requireConfig("feishu.approval-polling.table-id", approvalConfig.getTableId()));
@@ -447,7 +461,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         updateRequest.setFields(fields);
         updateRequest.setIgnoreConsistencyCheck(Boolean.TRUE);
         feishuBitableService.updateRecord(updateRequest);
-        log.info("已回写上架申请审批实例ID, recordId={}, instId={}", onboardingRecordId, instId);
+        log.info("已回写上架申请审批实例ID并改为审批中, recordId={}, instId={}", onboardingRecordId, instId);
     }
 
     /**
@@ -764,7 +778,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
             fields.put(FeishuConstants.ATTACHMENT_FIELD, attachment);
             putText(fields, "文件大小", formatFileSize(file.getSize()));
             putText(fields, FeishuConstants.UPLOAD_TIME_FIELD,
-                    LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+                    LocalDateTime.now().format(DATE_TIME_FORMATTER));
             putText(fields, FeishuConstants.UPLOADER_ID_FIELD, uploaderId);
             createFeishuRecord(request.getAppToken(), processInstanceConfig().getAttachmentTableId(), fields, "附件资料");
         }
@@ -823,6 +837,17 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         if (value != null && StringUtils.hasText(textValue(value))) {
             fields.put(name, textValue(value));
         }
+    }
+
+    /** 页面「适用部门/适用用户」写入上架申请「授权部门/授权用户」。 */
+    private void putAuthorizedAudience(Map<String, Object> target, Map<String, Object> source) {
+        if (source == null || target == null) {
+            return;
+        }
+        putText(target, FeishuConstants.AUTHORIZED_DEPARTMENT_FIELD,
+                source.get(FeishuConstants.APPLICABLE_DEPARTMENT_ID_FIELD));
+        putText(target, FeishuConstants.AUTHORIZED_USER_FIELD,
+                source.get(FeishuConstants.APPLICABLE_USER_ACCOUNT_FIELD));
     }
 
     private String formatFileSize(long size) {
@@ -1195,10 +1220,14 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
                 : request.getDetailFields();
         Map<String, Object> values = new LinkedHashMap<String, Object>();
         values.put("applicant", sourceFields.get(FeishuConstants.APPLICANT_ACCOUNT_FIELD));
-        values.put("department", eadOptionLabel(sourceFields.get(FeishuConstants.DEPARTMENT_ID_FIELD),
+        values.put("department", eadOptionLabel(
+                firstNonBlank(sourceFields.get(FeishuConstants.APPLICANT_DEPARTMENT_ID_FIELD),
+                        sourceFields.get(FeishuConstants.DEPARTMENT_ID_FIELD)),
                 EAD_DEPARTMENT_LABELS));
-        values.put("phone", sourceFields.get(FeishuConstants.PHONE_FIELD));
-        values.put("email", sourceFields.get(FeishuConstants.EMAIL_FIELD));
+        values.put("phone", firstNonBlank(sourceFields.get(FeishuConstants.APPLICANT_PHONE_FIELD),
+                sourceFields.get(FeishuConstants.PHONE_FIELD)));
+        values.put("email", firstNonBlank(sourceFields.get(FeishuConstants.APPLICANT_EMAIL_FIELD),
+                sourceFields.get(FeishuConstants.EMAIL_FIELD)));
         values.put("name", sourceFields.get(FeishuConstants.APPLICATION_NAME_FIELD));
         values.put("type", eadOptionLabel(sourceFields.get(FeishuConstants.APPLICATION_TYPE_FIELD),
                 EAD_APPLICATION_TYPE_LABELS));
@@ -1209,7 +1238,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         values.put("collaboration", sourceFields.get(FeishuConstants.COLLABORATION_FIELD));
         values.put("webAddress", sourceFields.get(FeishuConstants.WEB_ADDRESS_FIELD));
         values.put("mobileAddress", sourceFields.get(FeishuConstants.MOBILE_ADDRESS_FIELD));
-        values.put("contactDepartment", eadOptionLabel(sourceFields.get(FeishuConstants.DEPARTMENT_ID_FIELD),
+        values.put("contactDepartment", eadOptionLabel(sourceFields.get(FeishuConstants.CONTACT_DEPARTMENT_ID_FIELD),
                 EAD_DEPARTMENT_LABELS));
         values.put("contact", sourceFields.get(FeishuConstants.CONTACT_ACCOUNT_FIELD));
         values.put("contactPhone", sourceFields.get(FeishuConstants.PHONE_FIELD));
@@ -1267,6 +1296,13 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
 
     private String valueAsString(Object value) {
         return value == null ? "" : String.valueOf(value);
+    }
+
+    private Object firstNonBlank(Object primary, Object fallback) {
+        if (StringUtils.hasText(textValue(primary))) {
+            return primary;
+        }
+        return fallback;
     }
 
     private void acquireIdGenerationLock() {

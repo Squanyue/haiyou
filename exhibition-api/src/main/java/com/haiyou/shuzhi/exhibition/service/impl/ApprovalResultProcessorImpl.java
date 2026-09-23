@@ -130,9 +130,6 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
         }
 
         ApprovalState state = ApprovalState.from(snapshot.getStatus());
-        if (state == ApprovalState.PENDING) {
-            return skipped("审批仍在处理中，不执行后续业务");
-        }
         if (state == ApprovalState.UNKNOWN) {
             throw new IllegalArgumentException("不支持的审批状态: " + snapshot.getStatus());
         }
@@ -151,10 +148,20 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
         }
 
         try {
+            boolean ead = FeishuConstants.EAD_SOURCE.equals(source);
+            if (state == ApprovalState.PENDING) {
+                if (ead) {
+                    return applyEadInProgressStatus(source, instanceId, businessUniqueKey, snapshot);
+                }
+                return skipped("审批仍在处理中，不执行后续业务");
+            }
             List<ApprovalRequestRecord> records = new ArrayList<ApprovalRequestRecord>();
             // 上架/使用分表查询：一张表字段异常不应拖垮另一张表的回调处理。
-            records.addAll(findRequestRecordsSafely(RequestType.ONBOARDING, source, instanceId, businessUniqueKey, force));
-            records.addAll(findRequestRecordsSafely(RequestType.USE, source, instanceId, businessUniqueKey, force));
+            // EAD 申请状态会写成流转中/结束/中止，不能只按「审批中」查。
+            records.addAll(findRequestRecordsSafely(RequestType.ONBOARDING, source, instanceId, businessUniqueKey,
+                    ead || force));
+            records.addAll(findRequestRecordsSafely(RequestType.USE, source, instanceId, businessUniqueKey,
+                    ead || force));
             if (records.isEmpty()) {
                 return skipped(force
                         ? "未找到可重放的申请记录"
@@ -166,12 +173,18 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
             }
 
             ApprovalRequestRecord record = records.get(0);
+            if (ead) {
+                ApprovalHandlingResult alreadyDone = skipIfEadAlreadyTerminal(record, state, force);
+                if (alreadyDone != null) {
+                    return alreadyDone;
+                }
+            }
             log.info("开始处理审批结果, force={}, {}, status={}",
                     force, requestIdentity(record), snapshot.getStatus());
             if (state == ApprovalState.APPROVED) {
-                handleApproved(record, snapshot);
+                handleApproved(record, snapshot, source);
             } else {
-                handleNonApproved(record, snapshot, state);
+                handleNonApproved(record, snapshot, state, source);
             }
 
             ApprovalHandlingResult result = new ApprovalHandlingResult();
@@ -185,30 +198,31 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
         }
     }
 
-    private void handleApproved(ApprovalRequestRecord record, ApprovalStatusSnapshot snapshot) {
+    private void handleApproved(ApprovalRequestRecord record, ApprovalStatusSnapshot snapshot, String source) {
         log.info("开始处理审批通过业务, {}, status={}", requestIdentity(record), snapshot.getStatus());
         if (record.getType() == RequestType.ONBOARDING) {
             publishApplication(record.getApplicationId());
             grantOnboardingPermissions(record);
             grantApplicationConstructionPoints(record);
             createNotification(record, "应用上架审批通过", "您的应用上架申请已通过审批，应用已上架。");
-            updateRequest(record, FeishuConstants.APPROVED_STATUS,
+            updateRequest(record, eadStatusToWrite(source, snapshot, FeishuConstants.APPROVED_STATUS),
                     nodeOr(snapshot.getCurrentNode(), FeishuConstants.APPLICATION_PUBLISHED_STATUS), null);
         } else {
             // 权限与积分各自幂等：权限按应用+账号查重，积分按申请上的发放记录续写。
             grantPermissionIfMissing(record.getApplicationId(), record.getApplicantId());
             grantApplicationUsePoints(record);
             createNotification(record, "应用使用申请已通过", "您的应用使用申请已通过，已获得应用使用权限。");
-            updateRequest(record, FeishuConstants.APPROVED_STATUS,
+            updateRequest(record, eadStatusToWrite(source, snapshot, FeishuConstants.APPROVED_STATUS),
                     nodeOr(snapshot.getCurrentNode(), FeishuConstants.APPROVED_STATUS), null);
         }
         log.info("审批通过业务处理完成, {}", requestIdentity(record));
     }
 
     private void handleNonApproved(ApprovalRequestRecord record,
-                                   ApprovalStatusSnapshot snapshot, ApprovalState state) {
-        String status = state == ApprovalState.REJECTED
+                                   ApprovalStatusSnapshot snapshot, ApprovalState state, String source) {
+        String mappedStatus = state == ApprovalState.REJECTED
                 ? FeishuConstants.REJECTED_STATUS : FeishuConstants.CANCELED_STATUS;
+        String status = eadStatusToWrite(source, snapshot, mappedStatus);
         String node = nodeOr(snapshot.getCurrentNode(), status);
         String reason = state == ApprovalState.REJECTED ? snapshot.getRejectionReason() : null;
 
@@ -220,6 +234,89 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
             createNotification(record, title, content);
         }
         updateRequest(record, status, node, reason);
+    }
+
+    /**
+     * EAD 回调「流转中」：上架/使用申请状态原样写成流转中（含从中止/已退回恢复）。
+     * 已结束/已通过不回退。不授权、不上架。
+     */
+    private ApprovalHandlingResult applyEadInProgressStatus(String source, String instanceId,
+                                                            String businessUniqueKey,
+                                                            ApprovalStatusSnapshot snapshot) {
+        List<ApprovalRequestRecord> records = new ArrayList<ApprovalRequestRecord>();
+        records.addAll(findRequestRecordsSafely(RequestType.ONBOARDING, source, instanceId, businessUniqueKey, true));
+        records.addAll(findRequestRecordsSafely(RequestType.USE, source, instanceId, businessUniqueKey, true));
+        if (records.isEmpty()) {
+            return skipped("审批仍在处理中，不执行后续业务");
+        }
+        if (records.size() > 1) {
+            throw new IllegalStateException("同一审批标识匹配到多条申请，instanceId=" + instanceId
+                    + ", bizUniqueKey=" + businessUniqueKey);
+        }
+        ApprovalRequestRecord record = records.get(0);
+        String current = currentRequestStatus(record);
+        if (isApprovedTerminal(current)) {
+            return skipped(requestLabel(record) + "已结束，忽略流转中回调");
+        }
+        String eadStatus = eadStatusToWrite(source, snapshot, FeishuConstants.EAD_IN_PROGRESS_STATUS);
+        if (eadStatus.equals(current)) {
+            return skipped(requestLabel(record) + "已是流转中");
+        }
+        log.info("EAD 流转中，回写申请状态, {}, from={}, to={}", requestIdentity(record), current, eadStatus);
+        updateRequest(record, eadStatus,
+                nodeOr(snapshot.getCurrentNode(), eadStatus), null);
+        ApprovalHandlingResult result = new ApprovalHandlingResult();
+        result.setProcessed(true);
+        result.setMessage(requestLabel(record) + "状态已更新为" + eadStatus);
+        result.setRequestType(record.getType().name());
+        result.setRequestRecordId(record.getRecordId());
+        return result;
+    }
+
+    private ApprovalHandlingResult skipIfEadAlreadyTerminal(ApprovalRequestRecord record,
+                                                            ApprovalState state, boolean force) {
+        String current = currentRequestStatus(record);
+        String label = requestLabel(record);
+        if (state == ApprovalState.APPROVED && isApprovedTerminal(current) && !force) {
+            return skipped(label + "已是结束状态");
+        }
+        if (state == ApprovalState.REJECTED && isRejectedTerminal(current) && !force) {
+            return skipped(label + "已是中止状态");
+        }
+        if (state == ApprovalState.REJECTED && isApprovedTerminal(current)) {
+            return skipped(label + "已结束，忽略中止回调");
+        }
+        return null;
+    }
+
+    private String eadStatusToWrite(String source, ApprovalStatusSnapshot snapshot, String mappedStatus) {
+        if (FeishuConstants.EAD_SOURCE.equals(source)
+                && snapshot != null
+                && StringUtils.hasText(snapshot.getStatus())) {
+            return snapshot.getStatus().trim();
+        }
+        return mappedStatus;
+    }
+
+    private String requestLabel(ApprovalRequestRecord record) {
+        return record.getType() == RequestType.ONBOARDING ? "上架申请" : "使用申请";
+    }
+
+    private String currentRequestStatus(ApprovalRequestRecord record) {
+        if (record == null || record.getFields() == null) {
+            return "";
+        }
+        return text(record.getFields().get(FeishuConstants.STATUS_FIELD));
+    }
+
+    private boolean isApprovedTerminal(String status) {
+        return FeishuConstants.EAD_ENDED_STATUS.equals(status)
+                || FeishuConstants.APPROVED_STATUS.equals(status);
+    }
+
+    private boolean isRejectedTerminal(String status) {
+        return FeishuConstants.EAD_ABORTED_STATUS.equals(status)
+                || FeishuConstants.REJECTED_STATUS.equals(status);
     }
 
     private void publishApplication(String applicationId) {
@@ -582,11 +679,18 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
 
     private List<ApprovalRequestRecord> findRequestRecordsSafely(RequestType type, String source, String instanceId,
                                                                  String businessUniqueKey, boolean force) {
+        return findRequestRecordsSafely(type, source, instanceId, businessUniqueKey, force,
+                force ? null : FeishuConstants.PENDING_STATUS);
+    }
+
+    private List<ApprovalRequestRecord> findRequestRecordsSafely(RequestType type, String source, String instanceId,
+                                                                 String businessUniqueKey, boolean force,
+                                                                 String requiredStatus) {
         try {
-            return findRequestRecords(type, source, instanceId, businessUniqueKey, force);
+            return findRequestRecords(type, source, instanceId, businessUniqueKey, force, requiredStatus);
         } catch (RuntimeException ex) {
-            log.error("查询申请记录失败，已跳过该表继续处理, type={}, source={}, instanceId={}, bizUniqueKey={}, force={}, reason={}",
-                    type, source, instanceId, businessUniqueKey, force, ex.getMessage(), ex);
+            log.error("查询申请记录失败，已跳过该表继续处理, type={}, source={}, instanceId={}, bizUniqueKey={}, force={}, requiredStatus={}, reason={}",
+                    type, source, instanceId, businessUniqueKey, force, requiredStatus, ex.getMessage(), ex);
             return Collections.emptyList();
         }
     }
@@ -598,10 +702,17 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
 
     private List<ApprovalRequestRecord> findRequestRecords(RequestType type, String source, String instanceId,
                                                            String businessUniqueKey, boolean force) {
+        return findRequestRecords(type, source, instanceId, businessUniqueKey, force,
+                force ? null : FeishuConstants.PENDING_STATUS);
+    }
+
+    private List<ApprovalRequestRecord> findRequestRecords(RequestType type, String source, String instanceId,
+                                                           String businessUniqueKey, boolean force,
+                                                           String requiredStatus) {
         List<ApprovalRequestRecord> records = new ArrayList<ApprovalRequestRecord>();
         List<FeishuRecordSearchRequest.Condition> conditions = new ArrayList<FeishuRecordSearchRequest.Condition>();
-        if (!force) {
-            conditions.add(condition(FeishuConstants.STATUS_FIELD, "is", FeishuConstants.PENDING_STATUS));
+        if (!force && StringUtils.hasText(requiredStatus)) {
+            conditions.add(condition(FeishuConstants.STATUS_FIELD, "is", requiredStatus));
         }
         conditions.add(condition(FeishuConstants.SOURCE_FIELD, "is", source));
         if (type == RequestType.ONBOARDING && StringUtils.hasText(businessUniqueKey)) {
@@ -650,9 +761,11 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
         if (type == RequestType.ONBOARDING) {
             fields.add(FeishuConstants.UNIQUE_IDENTIFIER_FIELD);
             fields.add(FeishuConstants.APPLICATION_NO_FIELD);
+            fields.add(FeishuConstants.STATUS_FIELD);
         } else {
             fields.add(FeishuConstants.UNIQUE_IDENTIFIER_FIELD);
             fields.add(FeishuConstants.USE_APPLICATION_NO_FIELD);
+            fields.add(FeishuConstants.STATUS_FIELD);
         }
         fields.add(FeishuConstants.POINTS_AWARD_RECORD_FIELD);
         fields.add(FeishuConstants.APPLICANT_ID_FIELD);
@@ -1008,14 +1121,15 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
 
         private static ApprovalState from(String value) {
             String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
-            // EAD 回调常见中文态：流转中=进行中，结束=审批完成（通过）。
+            // EAD 回调常见中文态：流转中、结束、中止原样回写上架申请；业务上结束=通过，中止=拒绝。
             if (Arrays.asList("PENDING", "IN_PROGRESS", "PROCESSING", "审批中", "待审批", "流转中").contains(normalized)) {
                 return PENDING;
             }
             if (Arrays.asList("APPROVED", "PASSED", "PASS", "已通过", "结束", "已结束", "完成", "已完成").contains(normalized)) {
                 return APPROVED;
             }
-            if (Arrays.asList("REJECTED", "REFUSED", "DENIED", "已拒绝", "已退回").contains(normalized)) {
+            if (Arrays.asList("REJECTED", "REFUSED", "DENIED", "ABORTED", "TERMINATED",
+                    "已拒绝", "已退回", "中止", "已中止").contains(normalized)) {
                 return REJECTED;
             }
             if (Arrays.asList("CANCELED", "CANCELLED", "WITHDRAWN", "已撤回").contains(normalized)) {

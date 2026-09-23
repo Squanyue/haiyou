@@ -20,7 +20,7 @@ public class ApprovalReprocessRequest implements Serializable {
 
     /**
      * 审批状态。不传时默认按「结束/已通过」续写。
-     * 可传：结束、已通过、APPROVED、已退回、REJECTED 等。
+     * 可传：结束、中止、流转中、已通过、APPROVED、已退回、REJECTED 等。
      */
     private String approvalStatus;
 

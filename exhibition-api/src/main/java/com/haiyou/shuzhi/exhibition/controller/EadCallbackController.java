@@ -13,7 +13,7 @@ import com.haiyou.shuzhi.exhibition.dto.FeishuRecordUpdateVO;
 import com.haiyou.shuzhi.exhibition.service.ApprovalResultProcessor;
 import com.haiyou.shuzhi.exhibition.service.EadAuthService;
 import com.haiyou.shuzhi.exhibition.service.EadApprovalResultService;
-import com.haiyou.shuzhi.exhibition.service.EadCallbackFileService;
+// import com.haiyou.shuzhi.exhibition.service.EadCallbackFileService;
 import com.haiyou.shuzhi.exhibition.service.EadCallbackService;
 import com.haiyou.shuzhi.exhibition.service.EadProcessService;
 import lombok.RequiredArgsConstructor;
@@ -55,7 +55,8 @@ public class EadCallbackController {
     private final EadAuthService eadAuthService;
     private final EadProcessService eadProcessService;
     private final EadCallbackService eadCallbackService;
-    private final EadCallbackFileService eadCallbackFileService;
+    // 暂不落盘 EAD 回调附件，先停用注入。
+    // private final EadCallbackFileService eadCallbackFileService;
     private final EadApprovalResultService eadApprovalResultService;
     private final ApprovalResultProcessor approvalResultProcessor;
 
@@ -143,7 +144,6 @@ public class EadCallbackController {
 
         Map<String, String> headers = extractHeaders(request);
 
-        // 必须先打完整入参再落盘：附件目录失败时否则看不到 EAD 回调参数。
         log.info("========== EAD 回调原始入参开始 ==========");
         log.info("Content-Type: {}", contentType);
         log.info("Method: {}, URI: {}", request.getMethod(), request.getRequestURI());
@@ -155,10 +155,11 @@ public class EadCallbackController {
         }
         log.info("========== EAD 回调原始入参结束 ==========");
 
-        if (!filesByField.isEmpty()) {
-            List<Map<String, Object>> savedFiles = eadCallbackFileService.saveCallbackFiles(filesByField);
-            allParams.put("_files", savedFiles);
-        }
+        // 暂不保存 EAD 回调附件，只记入参和审批结果。
+        // if (!filesByField.isEmpty()) {
+        //     List<Map<String, Object>> savedFiles = eadCallbackFileService.saveCallbackFiles(filesByField);
+        //     allParams.put("_files", savedFiles);
+        // }
 
         // 保持既有 /approved 地址与入参解析方式，新审批处理改由统一处理器执行。
         ApprovalHandlingResult handlingResult = eadApprovalResultService.handleResult(allParams);

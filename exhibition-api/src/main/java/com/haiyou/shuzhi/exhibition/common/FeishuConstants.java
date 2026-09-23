@@ -32,13 +32,19 @@ public final class FeishuConstants {
     public static final String USE_APPLICATION_NO_FIELD = "主键";
     public static final String USE_REASON_FIELD = "申请理由";
     public static final String DICTIONARY_DEPARTMENT_FIELD = "所属部门ID";
-    public static final String DICTIONARY_USER_ID_FIELD = "用户ID";
+    /** 用户字典实际字段名：AD账号，不是「用户ID」。 */
+    public static final String DICTIONARY_USER_ID_FIELD = "AD账号";
 
     /** 申请表「状态」选项：与飞书单选文案保持一致。 */
+    public static final String TO_SUBMIT_STATUS = "待提交";
     public static final String PENDING_STATUS = "审批中";
     public static final String APPROVED_STATUS = "已通过";
     public static final String REJECTED_STATUS = "已退回";
     public static final String CANCELED_STATUS = "已撤回";
+    /** EAD 回调原样回写到上架/使用申请「状态」的取值。 */
+    public static final String EAD_IN_PROGRESS_STATUS = "流转中";
+    public static final String EAD_ENDED_STATUS = "结束";
+    public static final String EAD_ABORTED_STATUS = "中止";
 
     /** 申请表「审批来源」选项：与飞书单选文案保持一致。 */
     public static final String FEISHU_SOURCE = "飞书审批";
@@ -48,6 +54,8 @@ public final class FeishuConstants {
     public static final String APPLICATION_INDEX_APPLICATION_ID_FIELD = "应用ID";
     public static final String APPLICATION_INDEX_STATUS_FIELD = "状态";
     public static final String APPLICATION_INDEX_PUBLISH_TIME_FIELD = "发布时间";
+    public static final String APPLICATION_INDEX_CREATED_AT_FIELD = "创建日期";
+    public static final String APPLICATION_INDEX_UPDATED_AT_FIELD = "最近更新日期";
     public static final String APPLICATION_INDEX_OWNER_FIELD = "负责人ID";
     public static final String APPLICATION_INDEX_DEVELOPER_FIELD = "开发者ID";
     /** 应用索引「状态」选项：上架审批通过后写入。 */
@@ -109,6 +117,9 @@ public final class FeishuConstants {
     // 上架申请字段到 EAD 表单的固定映射
     public static final String APPLICANT_ACCOUNT_FIELD = "申请人AD账号";
     public static final String DEPARTMENT_ID_FIELD = "所属部门ID";
+    public static final String APPLICANT_DEPARTMENT_ID_FIELD = "申请人所属部门ID";
+    public static final String APPLICANT_PHONE_FIELD = "申请人联系电话";
+    public static final String APPLICANT_EMAIL_FIELD = "申请人联系邮箱";
     public static final String PHONE_FIELD = "联系电话";
     public static final String EMAIL_FIELD = "联系邮箱";
     public static final String APPLICATION_NAME_FIELD = "应用名称";
@@ -120,6 +131,7 @@ public final class FeishuConstants {
     public static final String WEB_ADDRESS_FIELD = "应用URL地址";
     public static final String MOBILE_ADDRESS_FIELD = "移动端地址";
     public static final String CONTACT_ACCOUNT_FIELD = "接入人AD账号";
+    public static final String CONTACT_DEPARTMENT_ID_FIELD = "接入人所属部门ID";
     public static final String APPLICABLE_DEPARTMENT_ID_FIELD = "适用部门ID";
     public static final String APPLICABLE_USER_ACCOUNT_FIELD = "适用用户AD账号";
     public static final String APPLICABLE_ROLE_FIELD = "适用角色";
