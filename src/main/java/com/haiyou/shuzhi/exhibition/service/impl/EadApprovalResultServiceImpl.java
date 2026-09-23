@@ -49,7 +49,7 @@ public class EadApprovalResultServiceImpl implements EadApprovalResultService {
         snapshot.setBusinessUniqueKey(firstValue(sources,
                 "bizUniqueKey", "businessUniqueKey", "business_unique_key",
                 "uniqueIdentifier", "unique_identifier"));
-        // EAD 真实回调把流程状态放在 resultString.inst.status（如「流转中」「结束」）。
+        // EAD 真实回调把流程状态放在 resultString.inst.status（流转中 / 结束 / 中止）。
         snapshot.setStatus(firstValue(sources,
                 "approvalStatus", "approval_status", "processStatus", "process_status", "resultStatus", "status"));
         snapshot.setCurrentNode(firstValue(sources,
