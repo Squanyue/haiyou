@@ -199,7 +199,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         }
 
         try {
-            bindEadInstanceToOnboarding(onboardingRecordId, eadResponse);
+            bindEadInstanceToOnboarding(onboardingRecordId, request.getUniqueIdentifier(), eadResponse);
         } catch (RuntimeException ex) {
             // 流程已在 EAD 侧创建，不能再删表，否则会出现悬空审批。
             log.error("EAD 已返回 instId 但回写上架申请失败，保留多维表数据, uniqueIdentifier={}, instId={}, onboardingRecordId={}",
@@ -439,7 +439,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
     /**
      * EAD 发起成功后回写流程实例 ID，并把上架申请从「待提交」改为「审批中」。
      */
-    private void bindEadInstanceToOnboarding(String onboardingRecordId, Object eadResponse) {
+    private void bindEadInstanceToOnboarding(String onboardingRecordId, String uniqueIdentifier, Object eadResponse) {
         if (!StringUtils.hasText(onboardingRecordId)) {
             throw new IllegalStateException("上架申请缺少 recordId，无法回写审批实例ID");
         }
@@ -450,6 +450,9 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
 
         FeishuProperties.ApprovalPolling approvalConfig = feishuProperties.getApprovalPolling();
         Map<String, Object> fields = new LinkedHashMap<String, Object>();
+        if (StringUtils.hasText(uniqueIdentifier)) {
+            fields.put(FeishuConstants.UNIQUE_IDENTIFIER_FIELD, uniqueIdentifier.trim());
+        }
         fields.put(FeishuConstants.APPROVAL_INSTANCE_FIELD, instId);
         fields.put(FeishuConstants.SOURCE_FIELD, FeishuConstants.EAD_SOURCE);
         fields.put(FeishuConstants.STATUS_FIELD, FeishuConstants.PENDING_STATUS);
@@ -461,7 +464,8 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         updateRequest.setFields(fields);
         updateRequest.setIgnoreConsistencyCheck(Boolean.TRUE);
         feishuBitableService.updateRecord(updateRequest);
-        log.info("已回写上架申请审批实例ID并改为审批中, recordId={}, instId={}", onboardingRecordId, instId);
+        log.info("已回写上架申请审批实例ID并改为审批中, recordId={}, instId={}, uniqueIdentifier={}",
+                onboardingRecordId, instId, uniqueIdentifier);
     }
 
     /**

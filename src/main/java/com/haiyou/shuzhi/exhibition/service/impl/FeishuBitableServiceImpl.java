@@ -1,5 +1,6 @@
 package com.haiyou.shuzhi.exhibition.service.impl;
 
+import com.haiyou.shuzhi.exhibition.common.FeishuConstants;
 import com.haiyou.shuzhi.exhibition.config.FeishuProperties;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordCreateRequest;
 import com.haiyou.shuzhi.exhibition.dto.FeishuRecordCreateResponse;
@@ -69,6 +70,9 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
         String url = buildSearchUrl(appToken, tableId, request);
         Map<String, Object> body = buildSearchBody(request);
 
+        log.info("调用飞书查询记录, appToken={}, tableId={}, tableName={}, uniqueIdentifier={}",
+                appToken, tableId, resolveTableName(tableId), extractUniqueIdentifier(request));
+        FeishuRecordSearchVO vo = new FeishuRecordSearchVO();
         FeishuRecordSearchResponse response = exchange(
                 url, HttpMethod.POST, accessToken, body, FeishuRecordSearchResponse.class, "查询记录");
 
@@ -76,7 +80,6 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
             throwFeishuError(response.getCode(), response.getMsg());
         }
 
-        FeishuRecordSearchVO vo = new FeishuRecordSearchVO();
         if (response.getData() == null) {
             vo.setItems(Collections.<FeishuRecordSearchVO.RecordItem>emptyList());
             vo.setHasMore(Boolean.FALSE);
@@ -114,7 +117,9 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
         Map<String, Object> body = new HashMap<String, Object>(2);
         body.put("fields", request.getFields());
 
-        log.info("调用飞书新增记录, appToken={}, tableId={}, fields={}", appToken, tableId, request.getFields());
+        log.info("调用飞书新增记录, appToken={}, tableId={}, tableName={}, uniqueIdentifier={}, fields={}",
+                appToken, tableId, resolveTableName(tableId),
+                extractUniqueIdentifier(request.getFields()), request.getFields());
         FeishuRecordCreateResponse response = exchange(
                 url, HttpMethod.POST, accessToken, body, FeishuRecordCreateResponse.class, "新增记录");
 
@@ -150,7 +155,9 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
         Map<String, Object> body = new HashMap<String, Object>(2);
         body.put("fields", request.getFields());
 
-        log.info("调用飞书更新记录, appToken={}, tableId={}, recordId={}", appToken, tableId, recordId);
+        log.info("调用飞书更新记录, appToken={}, tableId={}, tableName={}, recordId={}, uniqueIdentifier={}, fields={}",
+                appToken, tableId, resolveTableName(tableId), recordId,
+                extractUniqueIdentifier(request.getFields()), request.getFields());
         FeishuRecordUpdateResponse response = exchange(
                 url, HttpMethod.PUT, accessToken, body, FeishuRecordUpdateResponse.class, "更新记录");
 
@@ -184,7 +191,8 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
                 .replace("{table_id}", tableId)
                 .replace("{record_id}", recordId);
 
-        log.info("调用飞书删除记录, appToken={}, tableId={}, recordId={}", appToken, tableId, recordId);
+        log.info("调用飞书删除记录, appToken={}, tableId={}, tableName={}, recordId={}",
+                appToken, tableId, resolveTableName(tableId), recordId);
         FeishuRecordDeleteResponse response = exchange(
                 url, HttpMethod.DELETE, accessToken, null, FeishuRecordDeleteResponse.class, "删除记录");
 
@@ -325,6 +333,87 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
             return requestValue;
         }
         return configValue;
+    }
+
+    /**
+     * 按配置中的 tableId 反查业务表名，方便日志对照；未配置时回退为 tableId 本身。
+     */
+    private String resolveTableName(String tableId) {
+        if (!StringUtils.hasText(tableId)) {
+            return "";
+        }
+        FeishuProperties.ProcessInstance process = feishuProperties.getProcessInstance();
+        if (process != null) {
+            if (tableId.equals(process.getApplicationIndexTableId())) {
+                return "应用索引";
+            }
+            if (tableId.equals(process.getRpaDetailTableId())) {
+                return "RPA应用详情";
+            }
+            if (tableId.equals(process.getAttachmentTableId())) {
+                return "附件资料";
+            }
+        }
+        FeishuProperties.ApprovalPolling approval = feishuProperties.getApprovalPolling();
+        if (approval != null) {
+            if (tableId.equals(approval.getTableId())) {
+                return "上架申请";
+            }
+            if (tableId.equals(approval.getUseTableId())) {
+                return "使用申请";
+            }
+            if (tableId.equals(approval.getApplicationIndexTableId())) {
+                return "应用索引";
+            }
+            if (tableId.equals(approval.getUserDictionaryTableId())) {
+                return "用户字典";
+            }
+            if (tableId.equals(approval.getUserPermissionTableId())) {
+                return "用户权限";
+            }
+            if (tableId.equals(approval.getNotificationTableId())) {
+                return "消息通知";
+            }
+            if (tableId.equals(approval.getPointsBalanceTableId())) {
+                return "积分余额";
+            }
+        }
+        if (tableId.equals(feishuProperties.getTableId())) {
+            return "默认业务表";
+        }
+        return tableId;
+    }
+
+    /**
+     * 从写入字段或查询条件中取出「唯一标识」，便于日志串联同一笔申请。
+     */
+    private String extractUniqueIdentifier(Map<String, Object> fields) {
+        if (fields == null || fields.isEmpty()) {
+            return "";
+        }
+        Object value = fields.get(FeishuConstants.UNIQUE_IDENTIFIER_FIELD);
+        if (value == null) {
+            return "";
+        }
+        String text = String.valueOf(value).trim();
+        return "null".equals(text) ? "" : text;
+    }
+
+    private String extractUniqueIdentifier(FeishuRecordSearchRequest request) {
+        if (request == null || request.getFilter() == null || request.getFilter().getConditions() == null) {
+            return "";
+        }
+        for (FeishuRecordSearchRequest.Condition condition : request.getFilter().getConditions()) {
+            if (condition == null || !FeishuConstants.UNIQUE_IDENTIFIER_FIELD.equals(condition.getFieldName())) {
+                continue;
+            }
+            if (condition.getValue() == null || condition.getValue().isEmpty()) {
+                return "";
+            }
+            String text = condition.getValue().get(0);
+            return text == null ? "" : text.trim();
+        }
+        return "";
     }
 
     private String resolveAccessToken(String accessToken) {
