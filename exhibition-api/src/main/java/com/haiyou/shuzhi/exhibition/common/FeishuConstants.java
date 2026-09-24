@@ -115,7 +115,7 @@ public final class FeishuConstants {
     public static final String SUPERVISOR_FIELD = "人员.直属上级";
     public static final String EMPLOYEE_NO_FIELD = "人员.工号";
 
-    // RPA 详情和附件资料表字段
+    // RPA / 海能 work 详情和附件资料表字段
     public static final String PRIMARY_KEY_FIELD = "主键";
     public static final String APPLICATION_CODE_FIELD = "应用编码";
     public static final String VERSION_FIELD = "版本号";
@@ -123,6 +123,10 @@ public final class FeishuConstants {
     public static final String RPA_PLATFORM_FIELD = "RPA所属平台";
     public static final String PROCESS_STEPS_FIELD = "操作流程步骤";
     public static final String APPLICATION_DESCRIPTION_FIELD = "应用描述";
+    public static final String HAINENG_MEDIA_FIELD = "应用图片或视频";
+    public static final String HAINENG_GUIDE_FIELD = "使用指南";
+    public static final String HAINENG_FEATURE_FIELD = "使用功能";
+    public static final String HAINENG_DOC_LINK_FIELD = "使用说明文档链接";
     public static final String ATTACHMENT_FIELD = "附件";
     public static final String UPLOAD_TIME_FIELD = "上传时间";
     public static final String UPLOADER_ID_FIELD = "上传人ID";

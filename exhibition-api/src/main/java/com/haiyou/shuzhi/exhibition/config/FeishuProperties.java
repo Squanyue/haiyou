@@ -93,6 +93,9 @@ public class FeishuProperties {
         /** RPA 应用详情表 table_id。 */
         private String rpaDetailTableId;
 
+        /** 海能 work 应用详情表 table_id。 */
+        private String hainengWorkDetailTableId;
+
         /** 附件资料表 table_id。 */
         private String attachmentTableId;
     }

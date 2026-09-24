@@ -70,8 +70,8 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
         String url = buildSearchUrl(appToken, tableId, request);
         Map<String, Object> body = buildSearchBody(request);
 
-        log.info("调用飞书查询记录, appToken={}, tableId={}, tableName={}, uniqueIdentifier={}",
-                appToken, tableId, resolveTableName(tableId), extractUniqueIdentifier(request));
+        log.info("调用飞书查询记录, appToken={}, tableId={}, uniqueIdentifier={}",
+                appToken, tableId, extractUniqueIdentifier(request));
         FeishuRecordSearchVO vo = new FeishuRecordSearchVO();
         FeishuRecordSearchResponse response = exchange(
                 url, HttpMethod.POST, accessToken, body, FeishuRecordSearchResponse.class, "查询记录");
@@ -117,8 +117,8 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
         Map<String, Object> body = new HashMap<String, Object>(2);
         body.put("fields", request.getFields());
 
-        log.info("调用飞书新增记录, appToken={}, tableId={}, tableName={}, uniqueIdentifier={}, fields={}",
-                appToken, tableId, resolveTableName(tableId),
+        log.info("调用飞书新增记录, appToken={}, tableId={}, uniqueIdentifier={}, fields={}",
+                appToken, tableId,
                 extractUniqueIdentifier(request.getFields()), request.getFields());
         FeishuRecordCreateResponse response = exchange(
                 url, HttpMethod.POST, accessToken, body, FeishuRecordCreateResponse.class, "新增记录");
@@ -155,8 +155,8 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
         Map<String, Object> body = new HashMap<String, Object>(2);
         body.put("fields", request.getFields());
 
-        log.info("调用飞书更新记录, appToken={}, tableId={}, tableName={}, recordId={}, uniqueIdentifier={}, fields={}",
-                appToken, tableId, resolveTableName(tableId), recordId,
+        log.info("调用飞书更新记录, appToken={}, tableId={}, recordId={}, uniqueIdentifier={}, fields={}",
+                appToken, tableId, recordId,
                 extractUniqueIdentifier(request.getFields()), request.getFields());
         FeishuRecordUpdateResponse response = exchange(
                 url, HttpMethod.PUT, accessToken, body, FeishuRecordUpdateResponse.class, "更新记录");
@@ -191,8 +191,8 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
                 .replace("{table_id}", tableId)
                 .replace("{record_id}", recordId);
 
-        log.info("调用飞书删除记录, appToken={}, tableId={}, tableName={}, recordId={}",
-                appToken, tableId, resolveTableName(tableId), recordId);
+        log.info("调用飞书删除记录, appToken={}, tableId={}, recordId={}",
+                appToken, tableId, recordId);
         FeishuRecordDeleteResponse response = exchange(
                 url, HttpMethod.DELETE, accessToken, null, FeishuRecordDeleteResponse.class, "删除记录");
 
@@ -333,55 +333,6 @@ public class FeishuBitableServiceImpl implements FeishuBitableService {
             return requestValue;
         }
         return configValue;
-    }
-
-    /**
-     * 按配置中的 tableId 反查业务表名，方便日志对照；未配置时回退为 tableId 本身。
-     */
-    private String resolveTableName(String tableId) {
-        if (!StringUtils.hasText(tableId)) {
-            return "";
-        }
-        FeishuProperties.ProcessInstance process = feishuProperties.getProcessInstance();
-        if (process != null) {
-            if (tableId.equals(process.getApplicationIndexTableId())) {
-                return "应用索引";
-            }
-            if (tableId.equals(process.getRpaDetailTableId())) {
-                return "RPA应用详情";
-            }
-            if (tableId.equals(process.getAttachmentTableId())) {
-                return "附件资料";
-            }
-        }
-        FeishuProperties.ApprovalPolling approval = feishuProperties.getApprovalPolling();
-        if (approval != null) {
-            if (tableId.equals(approval.getTableId())) {
-                return "上架申请";
-            }
-            if (tableId.equals(approval.getUseTableId())) {
-                return "使用申请";
-            }
-            if (tableId.equals(approval.getApplicationIndexTableId())) {
-                return "应用索引";
-            }
-            if (tableId.equals(approval.getUserDictionaryTableId())) {
-                return "用户字典";
-            }
-            if (tableId.equals(approval.getUserPermissionTableId())) {
-                return "用户权限";
-            }
-            if (tableId.equals(approval.getNotificationTableId())) {
-                return "消息通知";
-            }
-            if (tableId.equals(approval.getPointsBalanceTableId())) {
-                return "积分余额";
-            }
-        }
-        if (tableId.equals(feishuProperties.getTableId())) {
-            return "默认业务表";
-        }
-        return tableId;
     }
 
     /**

@@ -12,7 +12,7 @@ public class ApprovalReprocessRequest implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    /** 上架申请唯一标识 ONB…；与 processInstanceId 至少传一个。 */
+    /** 上架申请唯一标识；与 processInstanceId 至少传一个。 */
     private String bizUniqueKey;
 
     /** 审批实例 ID（EAD instId 或飞书实例号）。 */

@@ -84,6 +84,10 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
     private static final ReentrantLock ID_GENERATION_LOCK = new ReentrantLock();
     /** 单实例内已分配但可能尚未写入多维表的申请单号。 */
     private final Map<String, String> reservedOnboardingApplicationNos = new HashMap<String, String>();
+    /** 单实例内已分配但可能尚未写入多维表的应用ID。 */
+    private final Map<String, String> reservedApplicationIds = new HashMap<String, String>();
+    /** 单实例内已分配但可能尚未写入多维表的海能 work 详情主键。 */
+    private final Map<String, String> reservedHainengWorkDetailIds = new HashMap<String, String>();
     private final EadProcessService eadProcessService;
     private final FeishuBitableService feishuBitableService;
     private final FeishuMediaService feishuMediaService;
@@ -117,13 +121,65 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
     }
 
     @Override
+    public String reserveApplicationId(String uniqueIdentifier) {
+        if (!StringUtils.hasText(uniqueIdentifier)) {
+            throw new IllegalArgumentException("uniqueIdentifier 不能为空，无法预占应用ID");
+        }
+        String normalizedIdentifier = uniqueIdentifier.trim();
+        acquireIdGenerationLock();
+        try {
+            String reserved = reservedApplicationIds.get(normalizedIdentifier);
+            if (StringUtils.hasText(reserved)) {
+                return reserved;
+            }
+            String applicationId = nextApplicationId();
+            reservedApplicationIds.put(normalizedIdentifier, applicationId);
+            return applicationId;
+        } finally {
+            releaseIdGenerationLock();
+        }
+    }
+
+    @Override
+    public String reserveHainengWorkDetailId(String uniqueIdentifier) {
+        if (!StringUtils.hasText(uniqueIdentifier)) {
+            throw new IllegalArgumentException("uniqueIdentifier 不能为空，无法预占海能work详情主键");
+        }
+        String normalizedIdentifier = uniqueIdentifier.trim();
+        acquireIdGenerationLock();
+        try {
+            String reserved = reservedHainengWorkDetailIds.get(normalizedIdentifier);
+            if (StringUtils.hasText(reserved)) {
+                return reserved;
+            }
+            String detailId = nextHainengWorkDetailId();
+            reservedHainengWorkDetailIds.put(normalizedIdentifier, detailId);
+            return detailId;
+        } finally {
+            releaseIdGenerationLock();
+        }
+    }
+
+    @Override
     public Object start(ProcessInstanceStartRequest request,
                         MultipartFile[] files,
                         Map<String, MultipartFile[]> eadFilesByField) {
         applyDefaults(request);
         boolean hainengWork = isHainengWorkApplication(request);
 
-        String onboardingRecordId;
+        // 海能 work：三张业务表（上架申请 / 应用索引 / 海能详情）由前端写入，后端只提供单号预占接口。
+        if (hainengWork) {
+            log.info("海能work应用跳过后台写表与EAD, uniqueIdentifier={}", request.getUniqueIdentifier());
+            Map<String, Object> skipped = new LinkedHashMap<String, Object>();
+            skipped.put("success", true);
+            skipped.put("skippedEad", true);
+            skipped.put("skippedTableWrite", true);
+            skipped.put("reason", "海能work应用由前端写表，后端不插入上架申请/应用索引/海能work详情");
+            skipped.put("uniqueIdentifier", request.getUniqueIdentifier());
+            return skipped;
+        }
+
+        String onboardingRecordId = null;
         acquireIdGenerationLock();
         try {
             try {
@@ -131,36 +187,18 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
                 String recordId = createFeishuRecord(request, files);
                 request.setRecordId(recordId);
 
-                // 海能 work 的上架申请已由前端创建，只回填关联应用 ID；其他类型由后端新增申请。
-                if (hainengWork) {
-                    onboardingRecordId = updateHainengWorkOnboardingApplication(request);
-                } else {
-                    onboardingRecordId = createOnboardingApplication(request);
-                }
+                onboardingRecordId = createOnboardingApplication(request);
 
                 // 应用索引写入成功后，再写入类型详情和附件资料。
                 createRpaDetailRecord(request);
                 createAttachmentRecords(request, files);
             } catch (RuntimeException ex) {
                 // 写表中途失败：按唯一标识删除本笔已写入的记录。
-                compensateDeleteWrittenTables(request, hainengWork, "多维表写入失败");
+                compensateDeleteWrittenTables(request, false, "多维表写入失败");
                 throw ex;
             }
         } finally {
             releaseIdGenerationLock();
-        }
-
-        // 2. 非海能 work 走 EAD 审批；海能 work（T005）由前端走飞书审批，不发起 EAD。
-        if (hainengWork) {
-            log.info("海能work应用不走EAD审批, uniqueIdentifier={}, onboardingRecordId={}, applicationRecordId={}",
-                    request.getUniqueIdentifier(), onboardingRecordId, request.getRecordId());
-            Map<String, Object> skipped = new LinkedHashMap<String, Object>();
-            skipped.put("success", true);
-            skipped.put("skippedEad", true);
-            skipped.put("reason", "海能work应用不走EAD审批");
-            skipped.put("onboardingRecordId", onboardingRecordId);
-            skipped.put("recordId", request.getRecordId());
-            return skipped;
         }
 
         Map<String, MultipartFile[]> normalizedEadFiles = normalizeEadFilesByField(eadFilesByField);
@@ -367,7 +405,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         fields.put(FeishuConstants.SOURCE_FIELD, FeishuConstants.EAD_SOURCE);
         fields.put(FeishuConstants.CURRENT_NODE_FIELD, FeishuConstants.TO_SUBMIT_STATUS);
         fields.put("提交时间", LocalDateTime.now().format(DATE_TIME_FORMATTER));
-        return createFeishuRecord(appToken, tableId, fields, "上架申请");
+        return createFeishuRecord(appToken, tableId, fields);
     }
 
     private String nextOnboardingApplicationNo() {
@@ -384,56 +422,6 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         String next = "PA" + String.format("%03d", nextNumber);
         log.info("已查询上架申请历史最大单号, max={}, next={}", max < 0 ? "无" : max, next);
         return next;
-    }
-
-    /**
-     * 海能 work 应用的上架申请记录由前端预先创建；后端按唯一标识定位该记录并回填应用 ID。
-     */
-    private String updateHainengWorkOnboardingApplication(ProcessInstanceStartRequest request) {
-        FeishuProperties.ApprovalPolling approvalConfig = feishuProperties.getApprovalPolling();
-        String appToken = requireConfig("feishu.approval-polling.app-token", approvalConfig.getAppToken());
-        String tableId = requireConfig("feishu.approval-polling.table-id", approvalConfig.getTableId());
-        String uniqueIdentifier = request.getUniqueIdentifier();
-        String applicationId = request.getFields() == null ? "" : textValue(
-                request.getFields().get(FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD));
-        if (!StringUtils.hasText(uniqueIdentifier) || !StringUtils.hasText(applicationId)) {
-            throw new IllegalStateException("缺少唯一标识或应用 ID，无法更新海能work上架申请");
-        }
-
-        FeishuRecordSearchRequest searchRequest = new FeishuRecordSearchRequest();
-        searchRequest.setAppToken(appToken);
-        searchRequest.setTableId(tableId);
-        searchRequest.setPageSize(100);
-        searchRequest.setFieldNames(Collections.singletonList(FeishuConstants.UNIQUE_IDENTIFIER_FIELD));
-        searchRequest.setAutomaticFields(Boolean.FALSE);
-        searchRequest.setFilter(equalFilter(FeishuConstants.UNIQUE_IDENTIFIER_FIELD, uniqueIdentifier));
-        List<FeishuRecordSearchVO.RecordItem> records = searchAllRecords(searchRequest);
-        if (records.isEmpty()) {
-            throw new IllegalStateException("海能work上架申请不存在唯一标识: " + uniqueIdentifier);
-        }
-        if (records.size() > 1) {
-            throw new IllegalStateException("海能work上架申请存在重复唯一标识: " + uniqueIdentifier);
-        }
-        FeishuRecordSearchVO.RecordItem record = records.get(0);
-        if (record == null || !StringUtils.hasText(record.getRecordId())) {
-            throw new IllegalStateException("海能work上架申请缺少recordId，唯一标识: " + uniqueIdentifier);
-        }
-
-        Map<String, Object> fields = new LinkedHashMap<String, Object>();
-        fields.put(FeishuConstants.APPLICATION_ID_FIELD, applicationId);
-        putAuthorizedAudience(fields, request.getFields());
-        // 海能 work 走飞书审批，不写 EAD 审批来源。
-        fields.put(FeishuConstants.SOURCE_FIELD, FeishuConstants.FEISHU_SOURCE);
-        FeishuRecordUpdateRequest updateRequest = new FeishuRecordUpdateRequest();
-        updateRequest.setAppToken(appToken);
-        updateRequest.setTableId(tableId);
-        updateRequest.setRecordId(record.getRecordId());
-        updateRequest.setFields(fields);
-        updateRequest.setIgnoreConsistencyCheck(Boolean.TRUE);
-        feishuBitableService.updateRecord(updateRequest);
-        log.info("已回填海能work上架申请关联应用ID, uniqueIdentifier={}, applicationId={}, recordId={}",
-                uniqueIdentifier, applicationId, record.getRecordId());
-        return record.getRecordId();
     }
 
     /**
@@ -470,8 +458,8 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
 
     /**
      * 按唯一标识补偿删除本笔已写入的多维表记录。
-     * 删除顺序：附件 → RPA → 上架申请 → 应用索引。
-     * 海能 work 上架申请由前端预创建，补偿时不删除该行。
+     * 删除顺序：附件 → 海能 work 详情 → RPA → 上架申请 → 应用索引。
+     * 海能 work 上架申请由前端负责，补偿时不删除该行。
      */
     private void compensateDeleteWrittenTables(ProcessInstanceStartRequest request,
                                                boolean preserveOnboardingApplication,
@@ -492,16 +480,23 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
 
         deleteRecordsByUniqueIdentifier(processAppToken,
                 requireConfig("feishu.process-instance.attachment-table-id", processConfig.getAttachmentTableId()),
-                uniqueIdentifier, "附件资料");
+                uniqueIdentifier);
+        if (StringUtils.hasText(processConfig.getHainengWorkDetailTableId())) {
+            deleteRecordsByUniqueIdentifier(processAppToken,
+                    processConfig.getHainengWorkDetailTableId().trim(),
+                    uniqueIdentifier);
+        }
         deleteRecordsByUniqueIdentifier(processAppToken,
                 requireConfig("feishu.process-instance.rpa-detail-table-id", processConfig.getRpaDetailTableId()),
-                uniqueIdentifier, "RPA应用详情");
+                uniqueIdentifier);
         if (!preserveOnboardingApplication) {
             deleteRecordsByUniqueIdentifier(approvalAppToken,
                     requireConfig("feishu.approval-polling.table-id", approvalConfig.getTableId()),
-                    uniqueIdentifier, "上架申请");
+                    uniqueIdentifier);
             reservedOnboardingApplicationNos.remove(uniqueIdentifier);
         }
+        reservedApplicationIds.remove(uniqueIdentifier);
+        reservedHainengWorkDetailIds.remove(uniqueIdentifier);
         String applicationIndexTableId = StringUtils.hasText(request.getTableId())
                 ? request.getTableId().trim()
                 : requireConfig("feishu.process-instance.application-index-table-id",
@@ -510,24 +505,28 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
                 ? request.getAppToken().trim()
                 : processAppToken;
         deleteRecordsByUniqueIdentifier(applicationIndexAppToken, applicationIndexTableId,
-                uniqueIdentifier, "应用索引");
+                uniqueIdentifier);
         log.warn("补偿删除结束, uniqueIdentifier={}, reason={}", uniqueIdentifier, reason);
     }
 
     private void deleteRecordsByUniqueIdentifier(String appToken, String tableId,
-                                                 String uniqueIdentifier, String tableName) {
+                                                 String uniqueIdentifier) {
+        deleteRecordsByField(appToken, tableId, FeishuConstants.UNIQUE_IDENTIFIER_FIELD, uniqueIdentifier);
+    }
+
+    private void deleteRecordsByField(String appToken, String tableId, String fieldName,
+                                      String fieldValue) {
         try {
             FeishuRecordSearchRequest searchRequest = new FeishuRecordSearchRequest();
             searchRequest.setAppToken(appToken);
             searchRequest.setTableId(tableId);
             searchRequest.setPageSize(100);
-            searchRequest.setFieldNames(Collections.singletonList(FeishuConstants.UNIQUE_IDENTIFIER_FIELD));
+            searchRequest.setFieldNames(Collections.singletonList(fieldName));
             searchRequest.setAutomaticFields(Boolean.FALSE);
-            searchRequest.setFilter(equalFilter(FeishuConstants.UNIQUE_IDENTIFIER_FIELD, uniqueIdentifier));
+            searchRequest.setFilter(equalFilter(fieldName, fieldValue));
             List<FeishuRecordSearchVO.RecordItem> records = searchAllRecords(searchRequest);
             if (records.isEmpty()) {
-                log.info("补偿删除未找到记录, tableName={}, tableId={}, uniqueIdentifier={}",
-                        tableName, tableId, uniqueIdentifier);
+                log.info("补偿删除未找到记录, tableId={}, {}={}", tableId, fieldName, fieldValue);
                 return;
             }
             int deleted = 0;
@@ -542,12 +541,12 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
                 feishuBitableService.deleteRecord(deleteRequest);
                 deleted++;
             }
-            log.info("补偿删除完成, tableName={}, tableId={}, uniqueIdentifier={}, deleted={}",
-                    tableName, tableId, uniqueIdentifier, deleted);
+            log.info("补偿删除完成, tableId={}, {}={}, deleted={}",
+                    tableId, fieldName, fieldValue, deleted);
         } catch (Exception ex) {
-            // 补偿失败不覆盖原始业务异常，转人工按唯一标识清理。
-            log.error("补偿删除失败，请人工按唯一标识清理, tableName={}, tableId={}, uniqueIdentifier={}",
-                    tableName, tableId, uniqueIdentifier, ex);
+            // 补偿失败不覆盖原始业务异常，转人工按字段值清理。
+            log.error("补偿删除失败，请人工清理, tableId={}, {}={}",
+                    tableId, fieldName, fieldValue, ex);
         }
     }
 
@@ -616,6 +615,9 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
                 processInstanceConfig().getApplicationIndexTableId(),
                 FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD,
                 "APP");
+        for (String reservedId : reservedApplicationIds.values()) {
+            max = Math.max(max, parseCodeNumber(reservedId, "APP"));
+        }
         int nextNumber = max < 0 ? 1 : max + 1;
         if (nextNumber > 9999) {
             throw new IllegalStateException("应用ID已达到 APP9999，无法继续生成四位编号");
@@ -693,13 +695,78 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         }
     }
 
+    /**
+     * 海能 work 应用详情由后端新增；上架申请仍由前端负责，此处不再读写上架申请表。
+     */
+    private void createHainengWorkDetailRecord(ProcessInstanceStartRequest request) {
+        Map<String, Object> sourceFields = request.getFields() == null
+                ? new LinkedHashMap<String, Object>()
+                : request.getFields();
+        String applicationType = textValue(sourceFields.get(FeishuConstants.APPLICATION_TYPE_FIELD));
+        if (!isHainengWorkApplication(request)) {
+            log.info("当前应用类型不是海能work，跳过详情写入, applicationType={}", applicationType);
+            return;
+        }
+
+        String applicationId = textValue(sourceFields.get(FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD));
+        if (!StringUtils.hasText(applicationId)) {
+            throw new IllegalArgumentException("应用ID不能为空，无法写入海能work应用详情表");
+        }
+        Map<String, Object> detailFields = request.getDetailFields() == null
+                ? new LinkedHashMap<String, Object>()
+                : new LinkedHashMap<String, Object>(request.getDetailFields());
+        Map<String, Object> fields = new LinkedHashMap<String, Object>();
+        // 主键按历史最大值递增，格式：HW0001。
+        putText(fields, FeishuConstants.PRIMARY_KEY_FIELD, nextHainengWorkDetailId());
+        putText(fields, FeishuConstants.UNIQUE_IDENTIFIER_FIELD, request.getUniqueIdentifier());
+        putText(fields, FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD, applicationId);
+        putText(fields, FeishuConstants.APPLICATION_CODE_FIELD, detailFields.get(FeishuConstants.APPLICATION_CODE_FIELD));
+        putText(fields, FeishuConstants.VERSION_FIELD,
+                valueOr(detailFields.get(FeishuConstants.VERSION_FIELD), "V1.0"));
+        putText(fields, FeishuConstants.HAINENG_MEDIA_FIELD,
+                detailFields.get(FeishuConstants.HAINENG_MEDIA_FIELD));
+        putText(fields, FeishuConstants.HAINENG_GUIDE_FIELD,
+                detailFields.get(FeishuConstants.HAINENG_GUIDE_FIELD));
+        putText(fields, FeishuConstants.HAINENG_FEATURE_FIELD,
+                detailFields.get(FeishuConstants.HAINENG_FEATURE_FIELD));
+        putText(fields, FeishuConstants.HAINENG_DOC_LINK_FIELD,
+                detailFields.get(FeishuConstants.HAINENG_DOC_LINK_FIELD));
+        putText(fields, FeishuConstants.APPLICATION_DESCRIPTION_FIELD,
+                valueOr(detailFields.get(FeishuConstants.APPLICATION_DESCRIPTION_FIELD),
+                        valueOr(sourceFields.get(FeishuConstants.SUMMARY_FIELD),
+                                sourceFields.get(FeishuConstants.APPLICATION_INTRODUCTION_FIELD))));
+        createFeishuRecord(request.getAppToken(),
+                requireConfig("feishu.process-instance.haineng-work-detail-table-id",
+                        processInstanceConfig().getHainengWorkDetailTableId()),
+                fields);
+    }
+
+    private String nextHainengWorkDetailId() {
+        int max = findHistoricalMaxNumber(
+                processInstanceConfig().getAppToken(),
+                requireConfig("feishu.process-instance.haineng-work-detail-table-id",
+                        processInstanceConfig().getHainengWorkDetailTableId()),
+                FeishuConstants.PRIMARY_KEY_FIELD,
+                "HW");
+        for (String reservedId : reservedHainengWorkDetailIds.values()) {
+            max = Math.max(max, parseCodeNumber(reservedId, "HW"));
+        }
+        int nextNumber = max < 0 ? 1 : max + 1;
+        if (nextNumber > 9999) {
+            throw new IllegalStateException("海能work详情主键已达到 HW9999，无法继续生成四位编号");
+        }
+        String next = "HW" + String.format("%04d", nextNumber);
+        log.info("已查询海能work详情历史最大主键, max={}, next={}", max < 0 ? "无" : max, next);
+        return next;
+    }
+
     private void createRpaDetailRecord(ProcessInstanceStartRequest request) {
         Map<String, Object> sourceFields = request.getFields() == null
                 ? new LinkedHashMap<String, Object>()
                 : request.getFields();
         String applicationType = textValue(sourceFields.get(FeishuConstants.APPLICATION_TYPE_FIELD));
         if (!isRpaType(applicationType)) {
-            log.info("当前应用类型不是 RPA，跳过 RPA 应用详情表, applicationType={}", applicationType);
+            log.info("当前应用类型不是 RPA，跳过详情写入, applicationType={}", applicationType);
             return;
         }
 
@@ -726,7 +793,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
                 valueOr(detailFields.get(FeishuConstants.APPLICATION_DESCRIPTION_FIELD),
                         valueOr(sourceFields.get(FeishuConstants.SUMMARY_FIELD),
                                 sourceFields.get(FeishuConstants.APPLICATION_INTRODUCTION_FIELD))));
-        createFeishuRecord(request.getAppToken(), processInstanceConfig().getRpaDetailTableId(), fields, "RPA应用详情");
+        createFeishuRecord(request.getAppToken(), processInstanceConfig().getRpaDetailTableId(), fields);
     }
 
     private String nextRpaDetailId() {
@@ -746,7 +813,7 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
 
     private void createAttachmentRecords(ProcessInstanceStartRequest request, MultipartFile[] files) {
         if (files == null || files.length == 0) {
-            log.info("没有上传附件，跳过附件资料表");
+            log.info("没有上传附件，跳过附件写入");
             return;
         }
         Map<String, Object> sourceFields = request.getFields() == null
@@ -784,9 +851,9 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
             putText(fields, FeishuConstants.UPLOAD_TIME_FIELD,
                     LocalDateTime.now().format(DATE_TIME_FORMATTER));
             putText(fields, FeishuConstants.UPLOADER_ID_FIELD, uploaderId);
-            createFeishuRecord(request.getAppToken(), processInstanceConfig().getAttachmentTableId(), fields, "附件资料");
+            createFeishuRecord(request.getAppToken(), processInstanceConfig().getAttachmentTableId(), fields);
         }
-        log.info("附件资料表写入完成, applicationId={}, count={}", applicationId, index);
+        log.info("附件资料写入完成, applicationId={}, count={}", applicationId, index);
     }
 
     private int nextAttachmentNumber() {
@@ -804,20 +871,20 @@ public class ProcessInstanceServiceImpl implements ProcessInstanceService {
         return nextNumber;
     }
 
-    private String createFeishuRecord(String appToken, String tableId, Map<String, Object> fields, String tableName) {
+    private String createFeishuRecord(String appToken, String tableId, Map<String, Object> fields) {
         FeishuRecordCreateRequest createRequest = new FeishuRecordCreateRequest();
         createRequest.setAppToken(appToken);
         createRequest.setTableId(tableId);
         createRequest.setUserIdType(requireConfig("feishu.default-person-user-id-type",
                 feishuProperties.getDefaultPersonUserIdType()));
         createRequest.setFields(fields);
-        log.info("写入{}，tableId={}, fieldsKeys={}", tableName, tableId, fields.keySet());
+        log.info("写入多维表记录, tableId={}, fieldsKeys={}", tableId, fields.keySet());
         FeishuRecordCreateVO createVO = feishuBitableService.createRecord(createRequest);
         if (createVO == null || createVO.getRecord() == null
                 || !StringUtils.hasText(createVO.getRecord().getRecordId())) {
-            throw new IllegalStateException(tableName + "写入成功但未返回 recordId");
+            throw new IllegalStateException("多维表写入成功但未返回 recordId, tableId=" + tableId);
         }
-        log.info("{}写入成功, recordId={}", tableName, createVO.getRecord().getRecordId());
+        log.info("多维表写入成功, tableId={}, recordId={}", tableId, createVO.getRecord().getRecordId());
         return createVO.getRecord().getRecordId();
     }
 
