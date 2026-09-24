@@ -204,14 +204,16 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
             publishApplication(record.getApplicationId());
             grantOnboardingPermissions(record);
             grantApplicationConstructionPoints(record);
-            createNotification(record, "应用上架审批通过", "您的应用上架申请已通过审批，应用已上架。");
+            createNotification(record, FeishuConstants.NOTIFICATION_ONBOARDING_APPROVED_TITLE,
+                    FeishuConstants.NOTIFICATION_ONBOARDING_APPROVED_CONTENT);
             updateRequest(record, eadStatusToWrite(source, snapshot, FeishuConstants.APPROVED_STATUS),
                     nodeOr(snapshot.getCurrentNode(), FeishuConstants.APPLICATION_PUBLISHED_STATUS), null);
         } else {
             // 权限与积分各自幂等：权限按应用+账号查重，积分按申请上的发放记录续写。
             grantPermissionIfMissing(record.getApplicationId(), record.getApplicantId());
             grantApplicationUsePoints(record);
-            createNotification(record, "应用使用申请已通过", "您的应用使用申请已通过，已获得应用使用权限。");
+            createNotification(record, FeishuConstants.NOTIFICATION_USE_APPROVED_TITLE,
+                    FeishuConstants.NOTIFICATION_USE_APPROVED_CONTENT);
             updateRequest(record, eadStatusToWrite(source, snapshot, FeishuConstants.APPROVED_STATUS),
                     nodeOr(snapshot.getCurrentNode(), FeishuConstants.APPROVED_STATUS), null);
         }
@@ -227,10 +229,12 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
         String reason = state == ApprovalState.REJECTED ? snapshot.getRejectionReason() : null;
 
         if (state == ApprovalState.REJECTED) {
-            String title = record.getType() == RequestType.ONBOARDING ? "应用上架审批被拒绝" : "应用使用申请被拒绝";
+            String title = record.getType() == RequestType.ONBOARDING
+                    ? FeishuConstants.NOTIFICATION_ONBOARDING_ABORTED_TITLE
+                    : FeishuConstants.NOTIFICATION_USE_REJECTED_TITLE;
             String content = StringUtils.hasText(reason)
-                    ? "您的申请未通过审批，退回原因：" + reason
-                    : "您的申请未通过审批。";
+                    ? FeishuConstants.NOTIFICATION_REJECTED_CONTENT_WITH_REASON_PREFIX + reason
+                    : FeishuConstants.NOTIFICATION_REJECTED_CONTENT;
             createNotification(record, title, content);
         }
         updateRequest(record, status, node, reason);
@@ -263,6 +267,16 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
             return skipped(requestLabel(record) + "已是流转中");
         }
         log.info("EAD 流转中，回写申请状态, {}, from={}, to={}", requestIdentity(record), current, eadStatus);
+        // 从作废/中止/已退回恢复为流转中时，补发重新启用通知。
+        if (isRejectedTerminal(current)) {
+            if (record.getType() == RequestType.ONBOARDING) {
+                createNotification(record, FeishuConstants.NOTIFICATION_ONBOARDING_REOPENED_TITLE,
+                        FeishuConstants.NOTIFICATION_ONBOARDING_REOPENED_CONTENT);
+            } else {
+                createNotification(record, FeishuConstants.NOTIFICATION_USE_REOPENED_TITLE,
+                        FeishuConstants.NOTIFICATION_USE_REOPENED_CONTENT);
+            }
+        }
         updateRequest(record, eadStatus,
                 nodeOr(snapshot.getCurrentNode(), eadStatus), null);
         ApprovalHandlingResult result = new ApprovalHandlingResult();
@@ -326,7 +340,8 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
         FeishuProperties.ApprovalPolling config = config();
         List<FeishuRecordSearchVO.RecordItem> records = searchAll(
                 config.getApplicationIndexTableId(),
-                Arrays.asList(FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD),
+                Arrays.asList(FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD,
+                        FeishuConstants.UNIQUE_IDENTIFIER_FIELD),
                 equalFilter(FeishuConstants.APPLICATION_INDEX_APPLICATION_ID_FIELD, applicationId));
         if (records.isEmpty()) {
             throw new IllegalStateException("应用索引不存在关联应用ID: " + applicationId);
@@ -336,6 +351,10 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
         }
 
         Map<String, Object> fields = new LinkedHashMap<String, Object>();
+        String uniqueIdentifier = text(safeFields(records.get(0)).get(FeishuConstants.UNIQUE_IDENTIFIER_FIELD));
+        if (StringUtils.hasText(uniqueIdentifier)) {
+            fields.put(FeishuConstants.UNIQUE_IDENTIFIER_FIELD, uniqueIdentifier);
+        }
         fields.put(FeishuConstants.APPLICATION_INDEX_STATUS_FIELD, FeishuConstants.APPLICATION_PUBLISHED_STATUS);
         fields.put(FeishuConstants.APPLICATION_INDEX_PUBLISH_TIME_FIELD, now());
         updateRecord(config.getApplicationIndexTableId(), records.get(0).getRecordId(), fields);
@@ -610,18 +629,23 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
         if (!StringUtils.hasText(uniqueKey)) {
             throw new IllegalStateException("申请缺少唯一标识/申请编号/审批实例ID，无法发送通知");
         }
+        final String notificationTitle = title;
         final FeishuProperties.ApprovalPolling config = config();
         withBusinessKeyLock("MSG", new LockedOperation() {
             @Override
             public void execute() {
+                // 同一申请会有作废/重新启用/通过等多条通知，幂等按「唯一标识 + 标题」。
                 List<FeishuRecordSearchVO.RecordItem> existed = searchAll(
                         config.getNotificationTableId(),
                         Arrays.asList(FeishuConstants.UNIQUE_IDENTIFIER_FIELD,
-                                FeishuConstants.NOTIFICATION_KEY_FIELD),
-                        equalFilter(FeishuConstants.UNIQUE_IDENTIFIER_FIELD, uniqueKey));
+                                FeishuConstants.NOTIFICATION_KEY_FIELD,
+                                FeishuConstants.NOTIFICATION_TITLE_FIELD),
+                        conjunctionFilter(Arrays.asList(
+                                condition(FeishuConstants.UNIQUE_IDENTIFIER_FIELD, "is", uniqueKey),
+                                condition(FeishuConstants.NOTIFICATION_TITLE_FIELD, "is", notificationTitle))));
                 if (!existed.isEmpty()) {
-                    log.info("通知已存在，跳过创建, uniqueKey={}, notificationCount={}",
-                            uniqueKey, existed.size());
+                    log.info("同标题通知已存在，跳过创建, uniqueKey={}, title={}, notificationCount={}",
+                            uniqueKey, notificationTitle, existed.size());
                     return;
                 }
                 Map<String, Object> fields = new LinkedHashMap<String, Object>();
@@ -629,7 +653,7 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
                         config.getNotificationTableId(), FeishuConstants.NOTIFICATION_KEY_FIELD));
                 fields.put(FeishuConstants.UNIQUE_IDENTIFIER_FIELD, uniqueKey);
                 fields.put(FeishuConstants.NOTIFICATION_RECEIVER_FIELD, record.getApplicantId());
-                fields.put(FeishuConstants.NOTIFICATION_TITLE_FIELD, title);
+                fields.put(FeishuConstants.NOTIFICATION_TITLE_FIELD, notificationTitle);
                 fields.put(FeishuConstants.NOTIFICATION_CONTENT_FIELD, content);
                 fields.put(FeishuConstants.NOTIFICATION_CATEGORY_FIELD, FeishuConstants.NOTIFICATION_CATEGORY_VALUE);
                 fields.put(FeishuConstants.NOTIFICATION_UNREAD_FIELD, FeishuConstants.NOTIFICATION_UNREAD_VALUE);
@@ -659,6 +683,9 @@ public class ApprovalResultProcessorImpl implements ApprovalResultProcessor {
 
     private void updateRequest(ApprovalRequestRecord record, String status, String currentNode, String rejectionReason) {
         Map<String, Object> fields = new LinkedHashMap<String, Object>();
+        if (StringUtils.hasText(record.getBusinessUniqueKey())) {
+            fields.put(FeishuConstants.UNIQUE_IDENTIFIER_FIELD, record.getBusinessUniqueKey().trim());
+        }
         fields.put(FeishuConstants.STATUS_FIELD, status);
         // 使用申请表没有「当前审批节点」「退回原因」，仅上架申请回写这两列。
         if (record.getType() == RequestType.ONBOARDING) {

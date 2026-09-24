@@ -83,7 +83,6 @@ public final class FeishuConstants {
 
     // 通知表字段和值
     public static final String NOTIFICATION_KEY_FIELD = "消息ID";
-    public static final String NOTIFICATION_DEDUP_FIELD = "防重键";
     public static final String NOTIFICATION_RECEIVER_FIELD = "接收人ID";
     public static final String NOTIFICATION_TITLE_FIELD = "消息标题";
     public static final String NOTIFICATION_CONTENT_FIELD = "消息内容";
@@ -93,6 +92,20 @@ public final class FeishuConstants {
     /** 通知表「分类」「已读状态」选项。 */
     public static final String NOTIFICATION_CATEGORY_VALUE = "审批通知";
     public static final String NOTIFICATION_UNREAD_VALUE = "未读";
+
+    /** 审批结果通知标题/正文。 */
+    public static final String NOTIFICATION_ONBOARDING_APPROVED_TITLE = "应用上架审批通过";
+    public static final String NOTIFICATION_ONBOARDING_APPROVED_CONTENT = "您的应用上架申请已通过审批，应用已上架。";
+    public static final String NOTIFICATION_USE_APPROVED_TITLE = "应用使用申请已通过";
+    public static final String NOTIFICATION_USE_APPROVED_CONTENT = "您的应用使用申请已通过，已获得应用使用权限。";
+    public static final String NOTIFICATION_ONBOARDING_ABORTED_TITLE = "应用上架审批被作废";
+    public static final String NOTIFICATION_USE_REJECTED_TITLE = "应用使用申请被拒绝";
+    public static final String NOTIFICATION_REJECTED_CONTENT = "您的申请未通过审批。";
+    public static final String NOTIFICATION_REJECTED_CONTENT_WITH_REASON_PREFIX = "您的申请未通过审批，退回原因：";
+    public static final String NOTIFICATION_ONBOARDING_REOPENED_TITLE = "应用上架审批已重新启用";
+    public static final String NOTIFICATION_ONBOARDING_REOPENED_CONTENT = "您的应用上架申请已重新启用，当前审批状态为流转中。";
+    public static final String NOTIFICATION_USE_REOPENED_TITLE = "应用使用申请已重新启用";
+    public static final String NOTIFICATION_USE_REOPENED_CONTENT = "您的应用使用申请已重新启用，当前审批状态为流转中。";
 
     // 上架申请写入的基础表字段
     public static final String TITLE_FIELD = "文本测试";
