@@ -40,4 +40,14 @@ public interface ProcessInstanceService {
      * 预占上架申请单号。重复传入同一唯一标识时，必须返回同一个申请单号。
      */
     String reserveOnboardingApplicationNo(String uniqueIdentifier);
+
+    /**
+     * 预占应用索引应用ID。重复传入同一唯一标识时，必须返回同一个应用ID。
+     */
+    String reserveApplicationId(String uniqueIdentifier);
+
+    /**
+     * 预占海能 work 应用详情主键。重复传入同一唯一标识时，必须返回同一个主键。
+     */
+    String reserveHainengWorkDetailId(String uniqueIdentifier);
 }

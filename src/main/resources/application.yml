@@ -63,11 +63,13 @@ feishu:
   default-supervisor-user-id: ou_a1e8b37926cb4bb21d3e70151a6e33dc
   # 「人员.工号」前端未传时的默认值
   default-person-employee-no: TEST-001
-  # 发起 EAD 前写入的应用索引、RPA 详情和附件资料表。
+  # 发起 EAD 前写入的应用索引、类型详情和附件资料表。
   process-instance:
     app-token: WlrRbzs3ia2EUBsI2qscO7Ajn1g
     application-index-table-id: tbl1Tvwl7t5RxcMs
     rpa-detail-table-id: tbl5Ks8cFcZeaWNN
+    # 海能 work 应用详情表
+    haineng-work-detail-table-id: tbl1U8zVHKD8umtB
     attachment-table-id: tbl4ImRqwcoGGpIX
   # 审批回传配置：上架申请/使用申请等表位于审批专用 Base。
   # 当前上架申请表链接对应的 table_id 为 tbl3z0pkeEWqlJRZ。
